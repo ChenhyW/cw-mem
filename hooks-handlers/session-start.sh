@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# memory-lite: SessionStart hook handler
+# cw-mem: SessionStart hook handler
 # stdin JSON (spec §2.1): { session_id, cwd }
 #
 # 行为:
@@ -16,8 +16,8 @@ set -u
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 export SERVER_URL="${SERVER_URL:-http://localhost:37889}"
 SERVER_JS="$PLUGIN_ROOT/lib/server.js"
-DATA_DIR="${MEMORY_LITE_DATA_DIR:-$HOME/.memory-lite}"
-export MEMORY_LITE_DATA_DIR="$DATA_DIR"
+DATA_DIR="${CW_MEM_DATA_DIR:-$HOME/.cw-mem}"
+export CW_MEM_DATA_DIR="$DATA_DIR"
 mkdir -p "$DATA_DIR"
 
 source "$(dirname "$0")/_log.sh"
@@ -45,11 +45,11 @@ if ! curl -s --max-time 2 "$SERVER_URL/api/health" > /dev/null 2>&1; then
 fi
 
 # 写 session + 取注入 + 打印最终 stdout JSON(node stdout = hook stdout)
-MEMORY_LITE_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
-MEMORY_LITE_RAW_JSON="$SESSION_JSON" node -e "
+CW_MEM_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
+CW_MEM_RAW_JSON="$SESSION_JSON" node -e "
 const http = require('http');
-const log = require(process.env.MEMORY_LITE_LOG_JS);
-const raw = process.env.MEMORY_LITE_RAW_JSON || '';
+const log = require(process.env.CW_MEM_LOG_JS);
+const raw = process.env.CW_MEM_RAW_JSON || '';
 let data = {};
 try { data = JSON.parse(raw); } catch(e) { log.warn('stdin parse failed: ' + e.message); }
 const sessionId = data.session_id || '';
@@ -78,11 +78,11 @@ function post(path, body) {
   });
 }
 function emitBanner() {
-  console.log(JSON.stringify({ systemMessage: '🧠 memory-lite 已生效 — 提示词自动记录中, UI: http://localhost:37889' }));
+  console.log(JSON.stringify({ systemMessage: '🧠 cw-mem 已生效 — 提示词自动记录中, UI: http://localhost:37889' }));
 }
 function emitInjection(text) {
   if (text && String(text).trim()) {
-    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text }, systemMessage: '🧠 memory-lite 已生效 — 已注入过往会话摘要' }));
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text }, systemMessage: '🧠 cw-mem 已生效 — 已注入过往会话摘要' }));
   } else { emitBanner(); }
 }
 

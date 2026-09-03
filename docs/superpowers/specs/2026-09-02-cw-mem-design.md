@@ -1,6 +1,6 @@
-# 设计方案:memory-lite —— 轻量级持久化记忆插件(Claude Code)
+# 设计方案:cw-mem —— 轻量级持久化记忆插件(Claude Code)
 
-> 日期:2026-09-02 · 状态:Spec(待实现) · 插件占位名 `memory-lite` / 仓库占位 `<repo-url>`
+> 日期:2026-09-02 · 状态:Spec(待实现) · 插件占位名 `cw-mem` / 仓库占位 `<repo-url>`
 >
 > 设计原则:所有结论用事实验证(见"已验证事实基线"),不猜测;遵循 YAGNI;闭环(记录→召回→注入)永不断。
 
@@ -66,7 +66,7 @@ hook stdout 为 JSON,两个通道(来源:claude-mem `src/shared/hook-io.ts`、`s
 - `hooks-handlers/*.sh`:5 个 bash 处理器(内联 node 调 HTTP,沿用 cw-mem 的 `post()` 模式与 `_log.sh`)。
 - `ui/server.js`:node HTTP server。DB、LLM 摘要、ollama embed、召回、注入文本组装、UI 静态服务、lazy-start。
 - `ui/index.html`:历史 + 配置 UI(沿用 cw-mem 设置弹框 + 取消/保存/保存并重启)。
-- `~/.memory-lite/config.json` + `~/.memory-lite/memory-lite.db` + `~/.memory-lite/logs`。
+- `~/.cw-mem/config.json` + `~/.cw-mem/cw-mem.db` + `~/.cw-mem/logs`。
 - `.claude-plugin/{marketplace.json, plugin.json}`。
 
 ## 5. 数据模型(SQLite + sqlite-vec)
@@ -200,8 +200,8 @@ UI 分区:
 
 ## 11. 插件注册与自动更新(req 9)
 
-- 仓库根 `.claude-plugin/marketplace.json`:`{name:"memory-lite", owner:{name:"<owner>"}, metadata:{description}, plugins:[{name:"memory-lite", version:"0.1.0", source:".", description}]}`;`.claude-plugin/plugin.json`:`{name, version, author, description}`。
-- 安装:`/plugin marketplace add <github-repo>` → `/plugin install memory-lite@memory-lite`。
+- 仓库根 `.claude-plugin/marketplace.json`:`{name:"cw-mem", owner:{name:"<owner>"}, metadata:{description}, plugins:[{name:"cw-mem", version:"0.1.0", source:".", description}]}`;`.claude-plugin/plugin.json`:`{name, version, author, description}`。
+- 安装:`/plugin marketplace add <github-repo>` → `/plugin install cw-mem@cw-mem`。
 - 自动更新:marketplace `autoUpdate:true`;版本号写在 `marketplace.json` 的 `plugins[].version`,Claude Code 据此判断更新。
 - 占位 `<github-repo>` / `<owner>` 待定。
 
@@ -217,7 +217,7 @@ UI 分区:
 
 ## 13. 占位与待定
 
-- 插件名 `memory-lite`、`<github-repo>`、`<owner>`:占位,定稿前填。
+- 插件名 `cw-mem`、`<github-repo>`、`<owner>`:占位,定稿前填。
 - `ollama.embedModel` 默认 `nomic-embed-text`(768);中文更强可选 `bge-m3`(1024)。config 可改,改维度需重建向量表。
 - 仓库结构(单 plugin vs marketplace 多 plugin):默认单 plugin(`source:"."`)。
 

@@ -1,4 +1,4 @@
-# memory-lite — 安装与验证
+# cw-mem — 安装与验证
 
 > 本文档对应实现计划 Task 12。代码侧已全部完成并通过单测;以下步骤需在 GitHub + 真实 Claude Code 会话中由用户执行。
 
@@ -11,8 +11,8 @@
 ## 1. 发布到 GitHub
 
 ```bash
-cd /Volumes/KINGSTON-CHENHY/plugins/memory-lite
-git remote add origin <你的-github-repo>   # 例如 git@github.com:chenhy/memory-lite.git
+cd /Volumes/KINGSTON-CHENHY/plugins/cw-mem
+git remote add origin <你的-github-repo>   # 例如 git@github.com:chenhy/cw-mem.git
 git push -u origin main
 ```
 
@@ -24,10 +24,10 @@ git push -u origin main
 
 ```
 /plugin marketplace add <你的-github-repo>
-/plugin install memory-lite@memory-lite
+/plugin install cw-mem@cw-mem
 ```
 
-确认运行副本落在 `~/.claude/plugins/cache/memory-lite/memory-lite/<version>/`。
+确认运行副本落在 `~/.claude/plugins/cache/cw-mem/cw-mem/<version>/`。
 
 ## 3. 配置(UI)
 
@@ -43,21 +43,21 @@ git push -u origin main
 
 ## 4. 端到端验证(真实会话)
 
-新开一个 Claude Code 会话(已在 memory-lite 工作目录下):
+新开一个 Claude Code 会话(已在 cw-mem 工作目录下):
 
 | 步骤 | 期望 |
 |---|---|
-| 会话启动 | `🧠 memory-lite 已生效` banner;若有历史则注入"过往会话摘要" |
+| 会话启动 | `🧠 cw-mem 已生效` banner;若有历史则注入"过往会话摘要" |
 | 发一个 prompt | UserPromptSubmit 注入"相关过往工作"(若 ollama+历史就绪);UI 出现 PROMPT 卡片 |
 | 用一个工具(如 Bash) | (toolSummary 开启时)TOOL 卡片出现,显示 `↳ 归属提示词 #N` 链接 |
 | 停止响应 | PROMPT 卡片出现"结果摘要";状态 success |
-| 退出会话 | session_summaries 出现会话级摘要;`~/.memory-lite/memory-lite.db` 有向量 |
+| 退出会话 | session_summaries 出现会话级摘要;`~/.cw-mem/cw-mem.db` 有向量 |
 
 检查数据:
 
 ```bash
-ls ~/.memory-lite/                          # config.json / memory-lite.db / 日志
-node -e "const Database=require('better-sqlite3');const db=new Database(require('os').homedir()+'/.memory-lite/memory-lite.db');console.log('prompts:',db.prepare('SELECT COUNT(*) c FROM prompts').get().c,'memories:',db.prepare('SELECT COUNT(*) c FROM memories_meta').get().c,'session_summaries:',db.prepare('SELECT COUNT(*) c FROM session_summaries').get().c)"
+ls ~/.cw-mem/                          # config.json / cw-mem.db / 日志
+node -e "const Database=require('better-sqlite3');const db=new Database(require('os').homedir()+'/.cw-mem/cw-mem.db');console.log('prompts:',db.prepare('SELECT COUNT(*) c FROM prompts').get().c,'memories:',db.prepare('SELECT COUNT(*) c FROM memories_meta').get().c,'session_summaries:',db.prepare('SELECT COUNT(*) c FROM session_summaries').get().c)"
 ```
 
 ## 5. 更新验证

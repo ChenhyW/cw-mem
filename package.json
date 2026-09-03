@@ -1,5 +1,5 @@
 {
-  "name": "memory-lite",
+  "name": "cw-mem",
   "version": "0.1.0",
   "description": "Lightweight persistent memory plugin for Claude Code",
   "main": "lib/server.js",

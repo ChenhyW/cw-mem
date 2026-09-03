@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# memory-lite: PostToolUse hook handler
+# cw-mem: PostToolUse hook handler
 # stdin JSON (spec §2.1):
 #   { session_id, prompt_id, cwd, tool_name, tool_use_id, duration_ms,
 #     tool_input, tool_response{ stdout, stderr, interrupted, isImage, noOutputExpected } }
@@ -16,7 +16,7 @@ set -u
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")"/.. && pwd)}"
 export SERVER_URL="${SERVER_URL:-http://localhost:37889}"
-export MEMORY_LITE_DATA_DIR="${MEMORY_LITE_DATA_DIR:-$HOME/.memory-lite}"
+export CW_MEM_DATA_DIR="${CW_MEM_DATA_DIR:-$HOME/.cw-mem}"
 
 source "$(dirname "$0")/_log.sh"
 
@@ -26,7 +26,7 @@ RAW_JSON="$(cat)"
 node -e "
 const fs = require('fs');
 const raw = process.argv[1];
-const base = (process.env.MEMORY_LITE_DATA_DIR || process.env.HOME + '/.memory-lite') + '/posttooluse-raw.json';
+const base = (process.env.CW_MEM_DATA_DIR || process.env.HOME + '/.cw-mem') + '/posttooluse-raw.json';
 try {
   fs.mkdirSync(require('path').dirname(base), { recursive: true });
   const p1 = base + '.2'; if (fs.existsSync(p1)) fs.unlinkSync(p1);
@@ -36,13 +36,13 @@ try {
 } catch(e) {}
 " "$RAW_JSON" 2>/dev/null || true
 
-MEMORY_LITE_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
-MEMORY_LITE_RAW_JSON="$RAW_JSON" node -e "
+CW_MEM_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
+CW_MEM_RAW_JSON="$RAW_JSON" node -e "
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const log = require(process.env.MEMORY_LITE_LOG_JS);
-const raw = process.env.MEMORY_LITE_RAW_JSON || '';
+const log = require(process.env.CW_MEM_LOG_JS);
+const raw = process.env.CW_MEM_RAW_JSON || '';
 let data = {};
 try { data = JSON.parse(raw); } catch(e) { log.warn('stdin parse failed: ' + e.message); }
 
@@ -76,7 +76,7 @@ function suppress() { console.log(JSON.stringify({ continue: true, suppressOutpu
   if (!tool_name) { log.warn('PostToolUse missing tool_name, skipped'); suppress(); process.exit(0); }
 
   // ── 读 config.toolSummary.enabled ──
-  const cfgPath = path.join(process.env.MEMORY_LITE_DATA_DIR || (process.env.HOME||'') + '/.memory-lite', 'config.json');
+  const cfgPath = path.join(process.env.CW_MEM_DATA_DIR || (process.env.HOME||'') + '/.cw-mem', 'config.json');
   let toolSummaryEnabled = false;
   if (fs.existsSync(cfgPath)) {
     try {

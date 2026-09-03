@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# memory-lite: SessionEnd hook handler
+# cw-mem: SessionEnd hook handler
 # stdin JSON (spec §2.1): { session_id, transcript_path, cwd, prompt_id, hook_event_name, reason }
 #
 # 行为:
@@ -11,15 +11,15 @@ set -u
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")"/.. && pwd)}"
 export SERVER_URL="${SERVER_URL:-http://localhost:37889}"
-export MEMORY_LITE_DATA_DIR="${MEMORY_LITE_DATA_DIR:-$HOME/.memory-lite}"
+export CW_MEM_DATA_DIR="${CW_MEM_DATA_DIR:-$HOME/.cw-mem}"
 
 RAW_JSON="$(cat)"
 
-MEMORY_LITE_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
-MEMORY_LITE_RAW_JSON="$RAW_JSON" node -e "
+CW_MEM_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
+CW_MEM_RAW_JSON="$RAW_JSON" node -e "
 const http = require('http');
-const log = require(process.env.MEMORY_LITE_LOG_JS);
-const raw = process.env.MEMORY_LITE_RAW_JSON || '';
+const log = require(process.env.CW_MEM_LOG_JS);
+const raw = process.env.CW_MEM_RAW_JSON || '';
 let data = {};
 try { data = JSON.parse(raw); } catch(e) { log.warn('SessionEnd stdin parse failed: ' + e.message); }
 const session_id = data.session_id || '';

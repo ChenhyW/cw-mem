@@ -1,5 +1,5 @@
 node_modules/
-.memory-lite/
+.cw-mem/
 *.log
 .superpowers/
 .DS_Store

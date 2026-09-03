@@ -1,4 +1,4 @@
-// memory-lite: shared logging module (Node.js side)
+// cw-mem: shared logging module (Node.js side)
 // 供内联 `node -e` 通过 require 调用, 与 bash 侧 _log.sh 共用同一份日志文件与滚动规则。
 //
 // 用法:
@@ -7,14 +7,14 @@
 //   log.trunc('prompt ...');   // 按 maxPreviewChars 截断(隐私)
 //   log.cleanup();             // 清理超期日志
 //
-// 日志文件: ~/.memory-lite/memory-lite-YYYYMMDD.log (按天滚动)
+// 日志文件: ~/.cw-mem/cw-mem-YYYYMMDD.log (按天滚动)
 // 级别阈值: debug < info < warn < error, 由 level 控制
-// 读取优先级: MEMORY_LITE_LOG_LEVEL 环境变量 > ~/.memory-lite/loglevel 文件 > config.json > 默认 info
+// 读取优先级: CW_MEM_LOG_LEVEL 环境变量 > ~/.cw-mem/loglevel 文件 > config.json > 默认 info
 
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = process.env.MEMORY_LITE_DATA_DIR || path.join(process.env.HOME || '', '.memory-lite');
+const DATA_DIR = process.env.CW_MEM_DATA_DIR || path.join(process.env.HOME || '', '.cw-mem');
 
 const LEVEL_NUM = { debug: 0, info: 1, warn: 2, error: 3 };
 
@@ -37,7 +37,7 @@ function loadConfig() {
 }
 
 function resolveLevel() {
-  if (process.env.MEMORY_LITE_LOG_LEVEL) return process.env.MEMORY_LITE_LOG_LEVEL;
+  if (process.env.CW_MEM_LOG_LEVEL) return process.env.CW_MEM_LOG_LEVEL;
   const fp = path.join(DATA_DIR, 'loglevel');
   if (fs.existsSync(fp)) {
     const v = fs.readFileSync(fp, 'utf8').trim();
@@ -71,7 +71,7 @@ function dateStamp() {
 function todayFile() {
   const p = localDateParts();
   const day = `${p.Y}${p.M}${p.D}`;
-  return path.join(DATA_DIR, `memory-lite-${day}.log`);
+  return path.join(DATA_DIR, `cw-mem-${day}.log`);
 }
 
 function write(level, msg) {
@@ -97,7 +97,7 @@ function cleanup() {
   try {
     if (!fs.existsSync(DATA_DIR)) return;
     for (const f of fs.readdirSync(DATA_DIR)) {
-      const m = f.match(/^memory-lite-(\d{8})\.log$/);
+      const m = f.match(/^cw-mem-(\d{8})\.log$/);
       if (m && m[1] < localCutoff) fs.unlinkSync(path.join(DATA_DIR, f));
     }
   } catch (e) { /* never fail */ }
