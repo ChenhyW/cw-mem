@@ -29,6 +29,15 @@ git push -u origin main
 
 确认运行副本落在 `~/.claude/plugins/cache/cw-mem/cw-mem/<version>/`。
 
+**关键:在运行副本里安装依赖**(`node_modules/` 被 gitignore,不会随仓库分发;不装则 hook 调 `better-sqlite3` 直接报错):
+
+```bash
+cd ~/.claude/plugins/cache/cw-mem/cw-mem/<version>/
+npm install
+```
+
+> `/plugin update` 后缓存会出现新版本目录,同样需要在新目录里重新 `npm install`。
+
 ## 3. 配置(UI)
 
 打开 `http://localhost:37889`(默认端口),点 ⚙️:
