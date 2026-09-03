@@ -1,1 +1,7 @@
+node_modules/
+.memory-lite/
+*.log
 .superpowers/
+.DS_Store
+docs/.DS_Store
+docs/superpowers/.DS_Store

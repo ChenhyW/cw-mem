@@ -1,0 +1,6 @@
+{
+  "name": "memory-lite",
+  "owner": { "name": "chenhy" },
+  "metadata": { "description": "轻量级持久化记忆插件" },
+  "plugins": [{ "name": "memory-lite", "version": "0.1.0", "source": ".", "description": "轻量级持久化记忆插件" }]
+}

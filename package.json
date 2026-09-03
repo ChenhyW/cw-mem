@@ -1,0 +1,8 @@
+{
+  "name": "memory-lite",
+  "version": "0.1.0",
+  "description": "Lightweight persistent memory plugin for Claude Code",
+  "main": "lib/server.js",
+  "scripts": { "test": "node --test test/" },
+  "dependencies": { "better-sqlite3": "^11.0.0", "sqlite-vec": "^0.1.6" }
+}

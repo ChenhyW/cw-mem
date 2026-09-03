@@ -1,0 +1,10 @@
+{
+  "description": "memory-lite 持久化记忆",
+  "hooks": {
+    "SessionStart":     [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/session-start.sh",     "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/user-prompt-submit.sh", "timeout": 10 }] }],
+    "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/post-tool-use.sh",      "timeout": 8 }] }],
+    "Stop":             [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/stop.sh",              "timeout": 10 }] }],
+    "SessionEnd":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks-handlers/session-end.sh",        "timeout": 10 }] }]
+  }
+}
