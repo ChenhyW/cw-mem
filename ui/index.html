@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>memory-lite</title>
+<style>
+[data-theme="dark"] {
+  --bg: #0d1117; --surface: #161b22; --surface-alt: #1c2128; --border: #21262d;
+  --text: #e6edf3; --text-muted: #7d8590; --accent: #8b5cf6; --accent-soft: rgba(139,92,246,0.12);
+  --hover: rgba(255,255,255,0.04); --select-hover: #2d333b; --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --inj-bg: rgba(56,139,253,0.08); --inj-border: rgba(56,139,253,0.25);
+}
+[data-theme="light"] {
+  --bg: #f6f8fa; --surface: #fff; --surface-alt: #f3f4f6; --border: #e5e7eb;
+  --text: #1f2328; --text-muted: #6e7681; --accent: #7c3aed; --accent-soft: rgba(124,58,237,0.08);
+  --hover: rgba(0,0,0,0.02); --select-hover: #f3f4f6; --shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --inj-bg: rgba(9,105,218,0.06); --inj-border: rgba(9,105,218,0.2);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); line-height:1.6; min-height:100vh; transition:background .25s,color .25s; }
+.header { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 28px; position:sticky; top:0; z-index:100; display:flex; align-items:center; gap:18px; box-shadow:var(--shadow); }
+.brand { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.brand-icon { width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:7px; background:var(--accent-soft); font-size:18px; }
+.brand-text { font-size:15px; font-weight:700; letter-spacing:-0.3px; }
+.header-controls { margin-left:auto; display:flex; align-items:center; gap:10px; }
+.select-wrapper { position:relative; }
+.project-select { appearance:none; background:var(--surface-alt); border:1px solid var(--border); color:var(--text); padding:7px 30px 7px 12px; border-radius:7px; font-size:13px; cursor:pointer; max-width:220px; }
+.project-select:hover { background:var(--select-hover); }
+.theme-btn { background:var(--surface-alt); border:1px solid var(--border); color:var(--text); width:36px; height:36px; border-radius:7px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center; }
+.theme-btn:hover { background:var(--select-hover); }
+.container { max-width:920px; margin:0 auto; padding:24px 20px 60px; }
+.loading, .empty { text-align:center; padding:60px 20px; color:var(--text-muted); }
+.spinner { width:28px; height:28px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; margin:0 auto 12px; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.prompt-list { display:flex; flex-direction:column; gap:14px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px; box-shadow:var(--shadow); }
+.card-tool { background:var(--surface-alt); padding:12px 16px; }
+.card-head { display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:13px; color:var(--text-muted); flex-wrap:wrap; }
+.tag { background:var(--accent-soft); color:var(--accent); padding:2px 8px; border-radius:5px; font-size:11px; font-weight:600; }
+.tag-tool { background:rgba(125,133,144,0.16); color:var(--text-muted); }
+.card-prompt { font-size:14px; color:var(--text); margin-bottom:8px; white-space:pre-wrap; word-break:break-word; }
+.card-response { font-size:13px; color:var(--text-muted); white-space:pre-wrap; word-break:break-word; max-height:200px; overflow:hidden; position:relative; }
+.parent-link { font-size:12px; color:var(--accent); }
+.summary-block { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); }
+.summary-title { font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
+.summary-row { font-size:13px; margin:2px 0; }
+.summary-row b { color:var(--text); font-weight:600; }
+.inj-block { margin-top:10px; padding:10px 12px; background:var(--inj-bg); border:1px solid var(--inj-border); border-radius:8px; }
+.inj-title { font-size:11px; font-weight:600; color:var(--text-muted); margin-bottom:4px; }
+.inj-hit { font-size:13px; margin:3px 0; }
+.inj-hit .score { color:var(--text-muted); font-size:11px; margin-left:6px; }
+.status-pill { font-size:11px; padding:2px 7px; border-radius:4px; }
+.status-pending { background:rgba(187,128,9,0.18); color:#d29922; }
+.status-success { background:rgba(46,160,67,0.18); color:#3fb950; }
+.status-failed { background:rgba(248,81,73,0.18); color:#f85149; }
+.retry-btn { font-size:11px; background:var(--surface-alt); border:1px solid var(--border); color:var(--accent); padding:3px 10px; border-radius:5px; cursor:pointer; margin-left:8px; }
+.load-more { display:block; margin:24px auto; padding:8px 24px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:7px; cursor:pointer; font-size:13px; }
+/* modal */
+.modal-mask { position:fixed; inset:0; background:rgba(0,0,0,0.5); display:none; align-items:flex-start; justify-content:center; z-index:200; padding:40px 16px; overflow:auto; }
+.modal-mask.show { display:flex; }
+.modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; width:100%; max-width:620px; box-shadow:0 8px 32px rgba(0,0,0,0.3); }
+.modal-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); }
+.modal-head h2 { font-size:16px; }
+.modal-close { background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer; }
+.modal-body { padding:20px; }
+.stabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin-bottom:20px; }
+.stab { background:none; border:none; color:var(--text-muted); padding:8px 14px; cursor:pointer; font-size:13px; border-bottom:2px solid transparent; }
+.stab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.sp { display:none; }
+.sp.active { display:block; }
+.sg { margin-bottom:8px; }
+.sg-title { font-size:13px; font-weight:600; color:var(--text-muted); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; }
+.field { margin-bottom:14px; }
+.field label { display:block; font-size:13px; font-weight:500; margin-bottom:4px; }
+.field .help { font-size:12px; color:var(--text-muted); font-weight:400; margin-top:2px; }
+.field-input input, .field-input select { width:100%; background:var(--surface-alt); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:13px; }
+.reboot-tag { font-size:10px; padding:1px 6px; border-radius:3px; margin-left:6px; vertical-align:middle; }
+.reboot-yes { background:rgba(187,128,9,0.18); color:#d29922; }
+.reboot-no { background:rgba(46,160,67,0.14); color:#3fb950; }
+.toggle { position:relative; display:inline-block; width:40px; height:22px; }
+.toggle input { opacity:0; width:0; height:0; }
+.toggle .track { position:absolute; inset:0; background:var(--border); border-radius:11px; cursor:pointer; transition:.2s; }
+.toggle .track::before { content:''; position:absolute; width:16px; height:16px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
+.toggle input:checked + .track { background:var(--accent); }
+.toggle input:checked + .track::before { transform:translateX(18px); }
+.modal-foot { display:flex; justify-content:flex-end; gap:10px; padding:16px 20px; border-top:1px solid var(--border); }
+.btn { padding:8px 16px; border-radius:7px; font-size:13px; cursor:pointer; border:1px solid var(--border); background:var(--surface-alt); color:var(--text); }
+.btn:hover { background:var(--select-hover); }
+.btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+.btn-primary:hover { filter:brightness(1.1); background:var(--accent); }
+.restart-note { font-size:12px; color:#d29922; background:rgba(187,128,9,0.08); padding:8px 12px; border-radius:6px; margin-top:12px; display:none; }
+.restart-note.show { display:block; }
+</style>
+</head>
+<body data-theme="dark">
+<div class="header">
+  <div class="brand">
+    <span class="brand-icon">🧠</span>
+    <span class="brand-text">memory-lite</span>
+  </div>
+  <div class="header-controls">
+    <div class="select-wrapper">
+      <select class="project-select" id="projectSelect" onchange="changeProject()">
+        <option value="">所有项目</option>
+      </select>
+    </div>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题">🌙</button>
+    <button class="theme-btn" onclick="openSettings()" title="设置">⚙️</button>
+  </div>
+</div>
+<div class="container">
+  <div id="loading" class="loading"><div class="spinner"></div><div>加载中...</div></div>
+  <div id="empty" class="empty" style="display:none">
+    <h2>暂无记录</h2>
+    <p>在 Claude Code 中输入提示词后,记录会自动显示在这里。</p>
+  </div>
+  <div id="promptList" class="prompt-list"></div>
+  <button id="loadMore" class="load-more" style="display:none" onclick="loadMore()">加载更多</button>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal-mask" id="settingsMask" onclick="if(event.target===this)closeSettings()">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>设置</h2>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="stabs" onclick="switchTab(event.target.dataset.tab)">
+        <button class="stab active" data-tab="tab-base">基础</button>
+        <button class="stab" data-tab="tab-llm">LLM 与向量化</button>
+        <button class="stab" data-tab="tab-recall">记忆与召回</button>
+      </div>
+      <!-- 基础 -->
+      <div class="sp active" id="tab-base">
+        <div class="sg">
+          <div class="sg-title">服务器</div>
+          <div class="field">
+            <label>端口 <span class="reboot-tag reboot-yes">需重启</span></label>
+            <div class="field-input"><input type="number" id="sPort" min="1024" max="65535"></div>
+          </div>
+        </div>
+        <div class="sg">
+          <div class="sg-title">日志</div>
+          <div class="field">
+            <label>日志级别 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><select id="sLogLevel"><option value="debug">debug</option><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div>
+          </div>
+          <div class="field">
+            <label>日志保留天数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sRetention" min="1" max="365"></div>
+          </div>
+          <div class="field">
+            <label>预览最大字符数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sPreview" min="10" max="10000"></div>
+          </div>
+        </div>
+      </div>
+      <!-- LLM 与向量化 -->
+      <div class="sp" id="tab-llm">
+        <div class="sg">
+          <div class="sg-title">LLM(摘要)</div>
+          <div class="field">
+            <label>开启摘要生成 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <label class="toggle"><input type="checkbox" id="sLlmEnabled"><span class="track"></span></label>
+          </div>
+          <div class="field">
+            <label>提供商 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><select id="sLlmProvider"><option value="openai-compatible">OpenAI 兼容</option><option value="anthropic">Anthropic</option></select></div>
+          </div>
+          <div class="field">
+            <label>API Base <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input id="sLlmApiBase" placeholder="https://api.openai.com/v1"></div>
+          </div>
+          <div class="field">
+            <label>模型 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input id="sLlmModel" placeholder="gpt-4o-mini"></div>
+          </div>
+          <div class="field">
+            <label>API Key <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input id="sLlmApiKey" type="password" placeholder="sk-..."></div>
+          </div>
+          <div class="field">
+            <label>单字段最大字符数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sSummaryFieldLimit" min="500" max="100000"></div>
+          </div>
+        </div>
+        <div class="sg">
+          <div class="sg-title">向量化(ollama)</div>
+          <div class="field">
+            <label>ollama URL <span class="reboot-tag reboot-yes">需重启</span></label>
+            <div class="field-input"><input id="sOllamaUrl" placeholder="http://127.0.0.1:11434"></div>
+          </div>
+          <div class="field">
+            <label>嵌入模型 <span class="reboot-tag reboot-yes">需重启</span></label>
+            <div class="field-input"><input id="sOllamaModel" placeholder="nomic-embed-text"></div>
+          </div>
+          <div class="field">
+            <label>嵌入维度 <span class="reboot-tag reboot-yes">需重启</span></label>
+            <div class="field-input"><input type="number" id="sOllamaDim" min="1" max="4096"></div>
+            <div class="help">改维度需重建向量表 → 保存并重启</div>
+          </div>
+        </div>
+      </div>
+      <!-- 记忆与召回 -->
+      <div class="sp" id="tab-recall">
+        <div class="sg">
+          <div class="sg-title">工具调用摘要</div>
+          <div class="field">
+            <label>开启工具调用记录 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <label class="toggle"><input type="checkbox" id="sToolSummaryEnabled"><span class="track"></span></label>
+            <div class="help">关闭时不记录工具原始 I/O, 省 token; Stop 批量跳过 tool 观察</div>
+          </div>
+          <div class="field">
+            <label>skip 模式 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><select id="sSkipMode"><option value="on">on(低信号标记 skip, 保留审计)</option><option value="off">off</option></select></div>
+          </div>
+        </div>
+        <div class="sg">
+          <div class="sg-title">召回</div>
+          <div class="field">
+            <label>topK(KNN 候选数) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sTopK" min="1" max="1000"></div>
+          </div>
+          <div class="field">
+            <label>minScore(注入阈值) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sMinScore" min="0" max="1" step="0.01"></div>
+          </div>
+          <div class="field">
+            <label>SessionStart 注入条数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sSessionStartCount" min="0" max="100"></div>
+          </div>
+          <div class="field">
+            <label>UserPrompt 注入最多条数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sInjectMaxCount" min="0" max="100"></div>
+          </div>
+          <div class="field">
+            <label>注入最大字符数 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sInjectMaxTokens" min="100" max="100000"></div>
+          </div>
+        </div>
+      </div>
+      <div class="restart-note" id="restartNote">
+        ⚠️ 有"需重启"项已变更。请点击「保存并重启」使新配置生效(重启后浏览器需访问新端口/新 ollama 地址)。
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeSettings()">取消</button>
+      <button class="btn" onclick="saveConfig(false)">保存</button>
+      <button class="btn btn-primary" onclick="saveConfig(true)">保存并重启</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let config = null;
+let prompts = [];
+let projects = [];
+let currentProject = '';
+let offset = 0;
+const LIMIT = 100;
+let hasMore = false;
+
+async function api(path, method, body) {
+  const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function trunc(s, n) { s = String(s||''); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+// claude_prompt_id → 显示序号(PROMPT 卡片的局部编号)
+function buildPromptIdMap(list) {
+  const map = {};
+  let n = 0;
+  list.filter(p => p.type === 'PROMPT').forEach(p => { if (p.claude_prompt_id) map[p.claude_prompt_id] = ++n; });
+  return map;
+}
+
+function parseMeta(s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return null; } }
+
+function statusPill(status) {
+  if (!status) return '';
+  const cls = { success:'status-success', pending:'status-pending', generating:'status-pending', failed_pending_retry:'status-failed', failed_final:'status-failed' }[status] || 'status-pending';
+  return ' <span class="status-pill ' + cls + '">' + esc(status) + '</span>';
+}
+
+function renderInjected(p) {
+  const inj = parseMeta(p.injected_context);
+  if (!inj || !inj.hits || !inj.hits.length) return '';
+  const hits = inj.hits.map(h => '<div class="inj-hit">• ' + esc(h.title || '#' + h.ref_id) + '<span class="score">score ' + (h.score || 0).toFixed(2) + '</span></div>').join('');
+  return '<div class="inj-block"><div class="inj-title">注入的记忆(' + inj.hits.length + ' 条)</div>' + hits + '</div>';
+}
+
+function renderSummary(p) {
+  const meta = parseMeta(p.summary_meta);
+  if (!meta && !p.summary) return '';
+  if (p.type === 'TOOL') {
+    // tool 观察: summary_meta 是 observation
+    if (!meta) return '';
+    const files = ( meta.filesChanged && meta.filesChanged.length) ? meta.filesChanged.join(', ') : '无';
+    return '<div class="summary-block"><div class="summary-title">工具观察</div>' +
+      (meta.title ? '<div class="summary-row"><b>' + esc(meta.title) + '</b></div>' : '') +
+      (meta.action ? '<div class="summary-row">操作: ' + esc(meta.action) + '</div>' : '') +
+      '<div class="summary-row">类型: ' + esc(meta.type) + ' · 文件: ' + esc(files) + '</div>' +
+      (meta.result ? '<div class="summary-row">结果: ' + esc(meta.result) + '</div>' : '') +
+      '</div>';
+  }
+  // PROMPT result 摘要
+  const src = meta || {};
+  const rows = [
+    src.request && ('请求: ' + esc(src.request)),
+    src.investigated && ('调研: ' + esc(src.investigated)),
+    src.learned && ('学到: ' + esc(src.learned)),
+    src.completed && ('完成: ' + esc(src.completed)),
+    src.next_steps && ('下一步: ' + esc(src.next_steps)),
+    src.notes && ('备注: ' + esc(src.notes))
+  ].filter(Boolean);
+  if (!rows.length && !p.summary) return '';
+  return '<div class="summary-block"><div class="summary-title">结果摘要</div>' +
+    (rows.length ? rows.map(r => '<div class="summary-row">' + r + '</div>').join('') : '<div class="summary-row">' + esc(trunc(p.summary, 300)) + '</div>') +
+    '</div>';
+}
+
+function cardBody(p, pidMap) {
+  const isTool = p.type === 'TOOL';
+  const head = '<div class="card-head">' +
+    (isTool ? '<span class="tag tag-tool">TOOL</span>' : '<span class="tag">PROMPT</span>') +
+    (isTool && p.tool_name ? ' ' + esc(p.tool_name) : '') +
+    (p.claude_prompt_id && pidMap[p.claude_prompt_id] ? '<span class="parent-link">↳ 归属提示词 #' + pidMap[p.claude_prompt_id] + '</span>' : '') +
+    (p.summary_status ? statusPill(p.summary_status) + (p.summary_status !== 'success' && p.summary_status !== 'generating' ? ' <button class="retry-btn" onclick="retrySummary(' + p.id + ')">重试</button>' : '') : '') +
+    '</div>';
+  const prompt = '<div class="card-prompt">' + esc(trunc(p.prompt, 500)) + '</div>';
+  let response = '';
+  if (!isTool && p.response) response = '<div class="card-response">' + esc(trunc(p.response, 600)) + '</div>';
+  return head + prompt + response + renderSummary(p) + (isTool ? '' : renderInjected(p));
+}
+
+function render(list) {
+  const pidMap = buildPromptIdMap(list);
+  const html = list.map(p => {
+    const cls = p.type === 'TOOL' ? 'card card-tool' : 'card';
+    return '<div class="' + cls + '" data-id="' + p.id + '">' + cardBody(p, pidMap) + '</div>';
+  }).join('');
+  const el = document.getElementById('promptList');
+  el.innerHTML += html;
+}
+
+async function loadProjects() {
+  const r = await api('/api/projects');
+  projects = r.projects || [];
+  const sel = document.getElementById('projectSelect');
+  sel.innerHTML = '<option value="">所有项目</option>' + projects.map(p => '<option value="' + esc(p.project_dir) + '">' + esc(p.project_dir.split('/').pop() || p.project_dir) + ' (' + p.prompt_count + ')</option>').join('');
+}
+
+async function loadPrompts(append) {
+  if (!append) { offset = 0; document.getElementById('promptList').innerHTML = ''; }
+  const params = new URLSearchParams({ limit: LIMIT, offset });
+  if (currentProject) params.set('project', currentProject);
+  const r = await api('/api/prompts?' + params.toString());
+  prompts = append ? prompts.concat(r.prompts || []) : (r.prompts || []);
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('empty').style.display = prompts.length ? 'none' : 'block';
+  render(r.prompts || []);
+  offset += (r.prompts || []).length;
+  hasMore = prompts.length < (r.total || 0);
+  document.getElementById('loadMore').style.display = hasMore ? 'block' : 'none';
+}
+
+function changeProject() {
+  currentProject = document.getElementById('projectSelect').value;
+  loadPrompts(false);
+}
+function loadMore() { loadPrompts(true); }
+
+async function retrySummary(id) {
+  await api('/api/prompts/summarize-retry', 'POST', { id });
+  setTimeout(() => loadPrompts(false), 1500);
+}
+
+// ─── 设置 ───
+function switchTab(tab) {
+  if (!tab) return;
+  document.querySelectorAll('.stab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.sp').forEach(p => p.classList.toggle('active', p.id === tab));
+}
+
+async function openSettings() {
+  config = await api('/api/config');
+  renderSettingsForm(config);
+  document.getElementById('settingsMask').classList.add('show');
+}
+function closeSettings() { document.getElementById('settingsMask').classList.remove('show'); }
+
+function renderSettingsForm(cfg) {
+  document.getElementById('sPort').value = cfg.server.port;
+  document.getElementById('sLogLevel').value = cfg.log.level;
+  document.getElementById('sRetention').value = cfg.log.retentionDays;
+  document.getElementById('sPreview').value = cfg.log.maxPreviewChars;
+  document.getElementById('sLlmEnabled').checked = cfg.llm.enabled;
+  document.getElementById('sLlmProvider').value = cfg.llm.provider;
+  document.getElementById('sLlmApiBase').value = cfg.llm.apiBase || '';
+  document.getElementById('sLlmModel').value = cfg.llm.model || '';
+  document.getElementById('sLlmApiKey').value = '';  // 脱敏, 留空让用户重填
+  document.getElementById('sLlmApiKey').placeholder = cfg.llm.apiKey ? '已保存(***' + cfg.llm.apiKey.slice(-4) + ', 留空不改)' : 'sk-...';
+  document.getElementById('sSummaryFieldLimit').value = cfg.llm.summaryFieldLimit;
+  document.getElementById('sOllamaUrl').value = cfg.ollama.url;
+  document.getElementById('sOllamaModel').value = cfg.ollama.embedModel;
+  document.getElementById('sOllamaDim').value = cfg.ollama.embedDim;
+  document.getElementById('sToolSummaryEnabled').checked = cfg.toolSummary.enabled;
+  document.getElementById('sSkipMode').value = cfg.toolSummary.skipMode;
+  document.getElementById('sTopK').value = cfg.recall.topK;
+  document.getElementById('sMinScore').value = cfg.recall.minScore;
+  document.getElementById('sSessionStartCount').value = cfg.recall.sessionStartCount;
+  document.getElementById('sInjectMaxCount').value = cfg.recall.injectMaxCount;
+  document.getElementById('sInjectMaxTokens').value = cfg.recall.injectMaxTokens;
+  document.getElementById('restartNote').classList.remove('show');
+}
+
+function buildPayload() {
+  return {
+    server: { port: parseInt(document.getElementById('sPort').value, 10) },
+    log: {
+      level: document.getElementById('sLogLevel').value,
+      retentionDays: parseInt(document.getElementById('sRetention').value, 10),
+      maxPreviewChars: parseInt(document.getElementById('sPreview').value, 10)
+    },
+    llm: {
+      enabled: document.getElementById('sLlmEnabled').checked,
+      provider: document.getElementById('sLlmProvider').value,
+      apiBase: document.getElementById('sLlmApiBase').value,
+      model: document.getElementById('sLlmModel').value,
+      apiKey: document.getElementById('sLlmApiKey').value || undefined,
+      summaryFieldLimit: parseInt(document.getElementById('sSummaryFieldLimit').value, 10)
+    },
+    ollama: {
+      url: document.getElementById('sOllamaUrl').value,
+      embedModel: document.getElementById('sOllamaModel').value,
+      embedDim: parseInt(document.getElementById('sOllamaDim').value, 10)
+    },
+    toolSummary: {
+      enabled: document.getElementById('sToolSummaryEnabled').checked,
+      skipMode: document.getElementById('sSkipMode').value
+    },
+    recall: {
+      topK: parseInt(document.getElementById('sTopK').value, 10),
+      minScore: parseFloat(document.getElementById('sMinScore').value),
+      sessionStartCount: parseInt(document.getElementById('sSessionStartCount').value, 10),
+      injectMaxCount: parseInt(document.getElementById('sInjectMaxCount').value, 10),
+      injectMaxTokens: parseInt(document.getElementById('sInjectMaxTokens').value, 10)
+    }
+  };
+}
+
+async function saveConfig(restart) {
+  const payload = buildPayload();
+  // 需重启项变更提示
+  const needRestart = (config && payload.server.port !== config.server.port)
+    || (config && payload.ollama.url !== config.ollama.url)
+    || (config && payload.ollama.embedModel !== config.ollama.embedModel)
+    || (config && payload.ollama.embedDim !== config.ollama.embedDim);
+  if (needRestart && !restart) {
+    document.getElementById('restartNote').classList.add('show');
+  }
+  if (restart) {
+    await api('/api/restart', 'POST', payload);
+    closeSettings();
+    setTimeout(() => location.reload(), 800);
+  } else {
+    await api('/api/config', 'POST', payload);
+    config = await api('/api/config');
+    closeSettings();
+  }
+}
+
+// ─── 主题 ───
+function toggleTheme() {
+  const cur = document.body.dataset.theme;
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.body.dataset.theme = next;
+  document.getElementById('themeBtn').textContent = next === 'dark' ? '🌙' : '☀️';
+  try { localStorage.setItem('ml-theme', next); } catch (e) {}
+}
+
+// ─── 启动 ───
+async function init() {
+  try { const t = localStorage.getItem('ml-theme'); if (t) { document.body.dataset.theme = t; document.getElementById('themeBtn').textContent = t === 'dark' ? '🌙' : '☀️'; } } catch (e) {}
+  await loadProjects();
+  await loadPrompts(false);
+  // 周期刷新(展示摘要生成进度)
+  setInterval(() => { if (!document.hidden && !document.getElementById('settingsMask').classList.contains('show')) loadPrompts(false); }, 5000);
+}
+init();
+</script>
+</body>
+</html>
