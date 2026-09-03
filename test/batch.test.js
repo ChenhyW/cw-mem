@@ -98,6 +98,32 @@ test('runStopBatch skips tool obs when toolSummary disabled', async () => {
   assert.equal(memCount, 1);
 });
 
+test('runStopBatch keeps success status when vectorization fails', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', '2026-09-03T00:00:01Z');
+  db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
+    .run(2, 'tu1', 'Bash', '{"command":"ls"}', '{"stdout":"a"}', '2026-09-03T00:00:01Z');
+
+  // 向量化全程抛错(模拟 ollama 超时/维度不匹配)
+  const throwingEmbed = async () => { throw new Error('ollama timeout'); };
+  const llmMod = makeLlmMod();
+  await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: throwingEmbed });
+
+  const t2 = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=2").get();
+  assert.equal(t2.summary_status, 'success', '工具摘要已成功, 向量化失败不应回退');
+  assert.ok(t2.summary_meta, '工具摘要内容应已落库');
+  const p1 = db.prepare("SELECT summary_status, summary FROM prompts WHERE id=1").get();
+  assert.equal(p1.summary_status, 'success', 'PROMPT 摘要已成功, 向量化失败不应回退');
+  assert.ok(p1.summary, 'PROMPT 摘要内容应已落库');
+  // 向量化全失败 → memories_meta 无新增
+  const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
+  assert.equal(memCount, 0);
+});
+
 test('runStopBatch does not redo already-success tool observations', async () => {
   const { db } = freshDb();
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
