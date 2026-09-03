@@ -39,10 +39,25 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .card-head { display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:13px; color:var(--text-muted); flex-wrap:wrap; }
 .tag { background:var(--accent-soft); color:var(--accent); padding:2px 8px; border-radius:5px; font-size:11px; font-weight:600; }
 .tag-tool { background:rgba(125,133,144,0.16); color:var(--text-muted); }
-.card-prompt { font-size:14px; color:var(--text); margin-bottom:8px; white-space:pre-wrap; word-break:break-word; }
+.card-prompt { font-size:14px; color:var(--text); margin-bottom:10px; padding:10px 12px; background:var(--surface-alt); border-radius:8px; white-space:pre-wrap; word-break:break-word; }
 .card-response { font-size:13px; color:var(--text-muted); white-space:pre-wrap; word-break:break-word; max-height:200px; overflow:hidden; position:relative; }
 .parent-link { font-size:12px; color:var(--accent); }
-.summary-block { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border); }
+.card-meta { font-size:12px; color:var(--text-muted); opacity:0.85; }
+.summary-block { margin-top:10px; padding:12px 14px; background:var(--accent-soft); border:1px solid var(--accent-soft); border-radius:8px; }
+.detail-btn { font-size:12px; background:var(--surface-alt); border:1px solid var(--border); color:var(--accent); padding:5px 14px; border-radius:6px; cursor:pointer; margin-top:6px; }
+.detail-btn:hover { background:var(--select-hover); }
+.detail-modal { max-width:760px; }
+.detail-body { padding:20px 24px; max-height:70vh; overflow:auto; }
+.detail-md { font-size:14px; line-height:1.7; color:var(--text); }
+.detail-md h1,.detail-md h2,.detail-md h3 { margin:14px 0 8px; line-height:1.3; }
+.detail-md h1 { font-size:18px; } .detail-md h2 { font-size:16px; } .detail-md h3 { font-size:15px; }
+.detail-md p { margin:6px 0; }
+.detail-md ul,.detail-md ol { margin:6px 0 6px 22px; }
+.detail-md li { margin:3px 0; }
+.detail-md blockquote { border-left:3px solid var(--accent); padding:4px 12px; margin:8px 0; color:var(--text-muted); }
+.detail-md pre.md-code { background:var(--surface-alt); border:1px solid var(--border); border-radius:6px; padding:10px 12px; overflow:auto; margin:8px 0; }
+.detail-md code.md-ic { background:var(--surface-alt); padding:1px 5px; border-radius:4px; font-size:12px; font-family:ui-monospace,SFMono-Regular,monospace; }
+.detail-md a { color:var(--accent); }
 .summary-title { font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
 .summary-row { font-size:13px; margin:2px 0; }
 .summary-row b { color:var(--text); font-weight:600; }
@@ -253,6 +268,14 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
   </div>
 </div>
 
+<!-- 详情弹窗 -->
+<div class="modal-mask" id="detailMask" onclick="if(event.target===this)closeDetail()">
+  <div class="modal detail-modal">
+    <div class="modal-head"><h2 id="detailTitle">详情</h2><button class="modal-close" onclick="closeDetail()">✕</button></div>
+    <div class="modal-body detail-body" id="detailBody"></div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let config = null;
@@ -262,6 +285,10 @@ let currentProject = '';
 let offset = 0;
 const LIMIT = 100;
 let hasMore = false;
+let lastSig = '';
+
+// 数据指纹: 任一卡片的 摘要状态/摘要内容/注入记忆 变化即视为有更新
+function sigOf(r) { return (r.total || 0) + '|' + (r.prompts || []).map(p => p.id + ':' + (p.summary_status || '') + ':' + (p.summary ? '1' : '0') + ':' + (p.injected_context ? '1' : '0')).join('|'); }
 
 async function api(path, method, body) {
   const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
@@ -273,6 +300,43 @@ async function api(path, method, body) {
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function trunc(s, n) { s = String(s||''); return s.length > n ? s.slice(0, n) + '…' : s; }
 
+// 极简 markdown → HTML(先抽代码块, 再转义, 再行级/行内处理; 防 XSS)
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, '<code class="md-ic">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+function mdToHtml(src) {
+  if (!src) return '';
+  src = String(src);
+  const codes = [];
+  src = src.replace(/```(\w*)\r?\n?([\s\S]*?)```/g, (m, lang, code) => {
+    codes.push('<pre class="md-code"><code>' + esc(code.replace(/\n$/, '')) + '</code></pre>');
+    return ' C' + (codes.length - 1) + ' ';
+  });
+  src = esc(src);
+  const lines = src.split('\n');
+  let html = '', inUl = false, inOl = false, inBq = false;
+  const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
+  for (const line of lines) {
+    if (/^&gt;\s?/.test(line)) { if (!inBq) { html += '<blockquote>'; inBq = true; } html += '<p>' + inlineMd(line.replace(/^&gt;\s?/, '')) + '</p>'; continue; }
+    else if (inBq) { html += '</blockquote>'; inBq = false; }
+    if (/^[-*]\s+/.test(line)) { if (!inUl) { closeLists(); html += '<ul>'; inUl = true; } html += '<li>' + inlineMd(line.replace(/^[-*]\s+/, '')) + '</li>'; continue; }
+    else if (inUl) { html += '</ul>'; inUl = false; }
+    if (/^\d+\.\s+/.test(line)) { if (!inOl) { closeLists(); html += '<ol>'; inOl = true; } html += '<li>' + inlineMd(line.replace(/^\d+\.\s+/, '')) + '</li>'; continue; }
+    else if (inOl) { html += '</ol>'; inOl = false; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { const lvl = Math.min(h[1].length + 1, 6); closeLists(); html += '<h' + lvl + ' class="md-h">' + inlineMd(h[2]) + '</h' + lvl + '>'; continue; }
+    if (line.trim() === '') { closeLists(); continue; }
+    closeLists();
+    html += '<p>' + inlineMd(line) + '</p>';
+  }
+  closeLists(); if (inBq) html += '</blockquote>';
+  return html.replace(/ C(\d+) /g, (m, i) => codes[parseInt(i, 10)]);
+}
+
 // claude_prompt_id → 显示序号(PROMPT 卡片的局部编号)
 function buildPromptIdMap(list) {
   const map = {};
@@ -282,6 +346,14 @@ function buildPromptIdMap(list) {
 }
 
 function parseMeta(s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return null; } }
+
+function fmtTime(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return esc(s);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
 
 function statusPill(status) {
   if (!status) return '';
@@ -331,13 +403,18 @@ function cardBody(p, pidMap) {
   const head = '<div class="card-head">' +
     (isTool ? '<span class="tag tag-tool">TOOL</span>' : '<span class="tag">PROMPT</span>') +
     (isTool && p.tool_name ? ' ' + esc(p.tool_name) : '') +
-    (p.claude_prompt_id && pidMap[p.claude_prompt_id] ? '<span class="parent-link">↳ 归属提示词 #' + pidMap[p.claude_prompt_id] + '</span>' : '') +
+    '<span class="card-meta">#' + p.id + ' · ' + fmtTime(p.created_at) + '</span>' +
+    (isTool && p.claude_prompt_id && pidMap[p.claude_prompt_id] ? '<span class="parent-link">↳ 归属提示词 #' + pidMap[p.claude_prompt_id] + '</span>' : '') +
     (p.summary_status ? statusPill(p.summary_status) + (p.summary_status !== 'success' && p.summary_status !== 'generating' ? ' <button class="retry-btn" onclick="retrySummary(' + p.id + ')">重试</button>' : '') : '') +
     '</div>';
+  if (isTool) {
+    // 工具卡: 仅显示观察摘要, 不显示原始调用信息
+    return head + renderSummary(p);
+  }
+  // PROMPT 卡: 提示词 + 结果摘要 + 注入记忆 + 详情按钮(查看原始响应, markdown 渲染)
   const prompt = '<div class="card-prompt">' + esc(trunc(p.prompt, 500)) + '</div>';
-  let response = '';
-  if (!isTool && p.response) response = '<div class="card-response">' + esc(trunc(p.response, 600)) + '</div>';
-  return head + prompt + response + renderSummary(p) + (isTool ? '' : renderInjected(p));
+  const detailBtn = (p.response ? '<button class="detail-btn" onclick="openDetail(' + p.id + ')">查看详情</button>' : '');
+  return head + prompt + renderSummary(p) + renderInjected(p) + detailBtn;
 }
 
 function render(list) {
@@ -366,6 +443,7 @@ async function loadPrompts(append) {
   document.getElementById('loading').style.display = 'none';
   document.getElementById('empty').style.display = prompts.length ? 'none' : 'block';
   render(r.prompts || []);
+  lastSig = sigOf(r);
   offset += (r.prompts || []).length;
   hasMore = prompts.length < (r.total || 0);
   document.getElementById('loadMore').style.display = hasMore ? 'block' : 'none';
@@ -380,6 +458,38 @@ function loadMore() { loadPrompts(true); }
 async function retrySummary(id) {
   await api('/api/prompts/summarize-retry', 'POST', { id });
   setTimeout(() => loadPrompts(false), 1500);
+}
+
+// 详情弹窗: 查看提示词原始响应(markdown 渲染)
+function openDetail(id) {
+  const p = prompts.find(x => x.id === id);
+  if (!p) return;
+  document.getElementById('detailTitle').textContent = '详情 #' + p.id;
+  const promptHtml = p.prompt ? '<div class="card-prompt">' + esc(p.prompt) + '</div>' : '';
+  const respHtml = p.response ? '<div class="detail-md">' + mdToHtml(p.response) + '</div>' : '<div class="empty" style="padding:30px">暂无原始响应</div>';
+  document.getElementById('detailBody').innerHTML = promptHtml + respHtml;
+  document.getElementById('detailMask').classList.add('show');
+}
+function closeDetail() { document.getElementById('detailMask').classList.remove('show'); }
+
+// 周期刷新: 仅在数据指纹变化时重渲染, 并保留滚动位置; 详情/设置打开时不刷新
+async function refreshList() {
+  if (document.hidden) return;
+  if (document.getElementById('detailMask').classList.contains('show')) return;
+  if (document.getElementById('settingsMask').classList.contains('show')) return;
+  const limit = Math.max(offset, LIMIT);
+  const params = new URLSearchParams({ limit, offset: 0 });
+  if (currentProject) params.set('project', currentProject);
+  let r;
+  try { r = await api('/api/prompts?' + params.toString()); } catch (e) { return; }
+  const sig = sigOf(r);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  const y = window.scrollY;
+  prompts = r.prompts || [];
+  document.getElementById('promptList').innerHTML = '';
+  render(prompts);
+  window.scrollTo(0, y);
 }
 
 // ─── 设置 ───
@@ -491,8 +601,8 @@ async function init() {
   try { const t = localStorage.getItem('ml-theme'); if (t) { document.body.dataset.theme = t; document.getElementById('themeBtn').textContent = t === 'dark' ? '🌙' : '☀️'; } } catch (e) {}
   await loadProjects();
   await loadPrompts(false);
-  // 周期刷新(展示摘要生成进度)
-  setInterval(() => { if (!document.hidden && !document.getElementById('settingsMask').classList.contains('show')) loadPrompts(false); }, 5000);
+  // 周期刷新(展示摘要生成进度): 仅数据变化时重渲染, 保留滚动位置, 详情/设置打开时不刷新
+  setInterval(refreshList, 5000);
 }
 init();
 </script>
