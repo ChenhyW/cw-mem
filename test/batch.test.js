@@ -98,6 +98,34 @@ test('runStopBatch skips tool obs when toolSummary disabled', async () => {
   assert.equal(memCount, 1);
 });
 
+test('runStopBatch does not redo already-success tool observations', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
+  // TOOL 行已 success: 父 PROMPT 重试时不应被重做, 也不应回退成 failed
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, summary_status, summary_meta, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', 'success', '{"title":"已成功","type":"change","concepts":[],"filesChanged":[],"result":"ok"}', '2026-09-03T00:00:01Z');
+  db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
+    .run(2, 'tu1', 'Bash', '{"command":"ls"}', '{"stdout":"a"}', '2026-09-03T00:00:01Z');
+
+  let toolCalls = 0;
+  const base = makeLlmMod();
+  const llmMod = {
+    ...base,
+    summarize: async ({ kind }) => {
+      if (kind === 'tool') { toolCalls++; throw new Error('success tool should not be re-summarized'); }
+      return base.summarize({ kind });
+    }
+  };
+  await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+
+  assert.equal(toolCalls, 0, '已成功的工具观察不应再调 LLM');
+  const t2 = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=2").get();
+  assert.equal(t2.summary_status, 'success', '已成功工具状态不应被回退');
+  assert.equal(JSON.parse(t2.summary_meta).title, '已成功', '原摘要内容不应被覆盖');
+});
+
 test('runSessionSummary writes session_summaries row + 1 memory', async () => {
   const { db } = freshDb();
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
