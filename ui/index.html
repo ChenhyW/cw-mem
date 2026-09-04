@@ -44,6 +44,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .card-prompt { font-size:14px; color:var(--text); margin-bottom:10px; padding:10px 12px; background:var(--surface-alt); border-radius:8px; white-space:pre-wrap; word-break:break-word; }
 .card-response { font-size:13px; color:var(--text-muted); white-space:pre-wrap; word-break:break-word; max-height:200px; overflow:hidden; position:relative; }
 .parent-link { font-size:12px; color:var(--accent); }
+.parent-jump { cursor:pointer; }
+.parent-jump:hover { text-decoration:underline; }
+.card-flash { animation: cardFlash 1.6s ease; }
+@keyframes cardFlash { 0%,100% { box-shadow:var(--shadow); } 20%,60% { box-shadow:0 0 0 2px var(--accent), 0 6px 18px rgba(139,92,246,0.28); } }
 .card-meta { font-size:12px; color:var(--text-muted); opacity:0.85; }
 .summary-block { margin-top:10px; padding:12px 14px; background:var(--accent-soft); border:1px solid var(--accent-soft); border-radius:8px; }
 .detail-btn { font-size:12px; background:var(--surface-alt); border:1px solid var(--border); color:var(--accent); padding:5px 14px; border-radius:6px; cursor:pointer; margin-top:6px; }
@@ -90,6 +94,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .obs-security { background:rgba(248,81,73,0.28); color:#ff7b72; }
 .obs-skip { background:rgba(125,133,144,0.15); color:var(--text-muted); }
 .file-chip { display:inline-block; font-size:11px; font-family:ui-monospace,SFMono-Regular,monospace; background:var(--surface); border:1px solid var(--border); color:var(--text-muted); padding:1px 7px; border-radius:4px; margin:2px 4px 2px 0; word-break:break-all; }
+.card-project { font-size:12px; font-weight:600; color:var(--text-muted); background:var(--surface); border:1px solid var(--border); padding:1px 8px; border-radius:5px; }
+.tool-title { font-size:14px; font-weight:600; color:var(--text); margin:2px 0 6px; line-height:1.4; }
+.prompt-title { font-size:14px; font-weight:600; color:var(--text); margin:2px 0 8px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.card-foot { display:flex; align-items:center; gap:10px; margin-top:10px; font-size:12px; color:var(--text-muted); flex-wrap:wrap; opacity:0.85; }
 .retry-btn { font-size:11px; background:var(--surface-alt); border:1px solid var(--border); color:var(--accent); padding:3px 10px; border-radius:5px; cursor:pointer; margin-left:8px; }
 .load-more { display:block; margin:24px auto; padding:8px 24px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:7px; cursor:pointer; font-size:13px; }
 /* modal */
@@ -403,13 +411,18 @@ const expandedDetails = new Set();
 function buildPromptMaps(list) {
   const seqById = {};
   const seqByClaudePid = {};
+  const idByClaudePid = {};
   const promptsOnly = list.filter(p => p.type === 'PROMPT')
     .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || (a.id - b.id));
   promptsOnly.forEach((p, i) => {
     seqById[p.id] = i + 1;
-    if (p.claude_prompt_id) seqByClaudePid[p.session_id + '|' + p.claude_prompt_id] = i + 1;
+    if (p.claude_prompt_id) {
+      const k = p.session_id + '|' + p.claude_prompt_id;
+      seqByClaudePid[k] = i + 1;
+      idByClaudePid[k] = p.id;  // 父 PROMPT 卡的 data-id(db id), 供 TOOL 卡跳转
+    }
   });
-  return { seqById, seqByClaudePid };
+  return { seqById, seqByClaudePid, idByClaudePid };
 }
 
 function parseMeta(s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return null; } }
@@ -457,19 +470,7 @@ function summaryRow(label, content) {
 function renderSummary(p) {
   const meta = parseMeta(p.summary_meta);
   if (!meta && !p.summary) return '';
-  if (p.type === 'TOOL') {
-    // tool 观察: summary_meta 是 observation; 不带块标题, 类型已用徽章展示
-    if (!meta) return '';
-    const files = (meta.filesChanged && meta.filesChanged.length) ? meta.filesChanged : [];
-    const fileChips = files.length ? '<div class="summary-row">' + files.map(f => '<span class="file-chip">' + esc(f) + '</span>').join('') + '</div>' : '';
-    return '<div class="summary-block">' +
-      (meta.title || meta.type ? '<div class="obs-head">' + obsBadge(meta.type) + (meta.title ? '<b>' + esc(meta.title) + '</b>' : '') + '</div>' : '') +
-      summaryRow('操作', esc(meta.action)) +
-      fileChips +
-      summaryRow('结果', esc(meta.result)) +
-      '</div>';
-  }
-  // PROMPT result 摘要
+  // PROMPT result 摘要(TOOL 卡在 cardBody 内单独布局, 不走此分支)
   const src = meta || {};
   const rows = [
     summaryRow('请求', esc(src.request)),
@@ -487,26 +488,36 @@ function renderSummary(p) {
 
 function cardBody(p, maps) {
   const isTool = p.type === 'TOOL';
-  const parentSeq = isTool && p.claude_prompt_id ? maps.seqByClaudePid[p.session_id + '|' + p.claude_prompt_id] : null;
-  const head = '<div class="card-head">' +
-    (isTool ? '<span class="tag tag-tool">TOOL</span>' : '<span class="tag">PROMPT</span>') +
-    (isTool && p.tool_name ? '<span class="tool-name">' + esc(p.tool_name) + '</span>' : '') +
-    '<span class="card-meta">#' + (isTool ? p.id : (maps.seqById[p.id] || p.id)) + ' · ' + fmtTime(p.created_at) + '</span>' +
-    (parentSeq ? '<span class="parent-link">↳ 归属提示词 #' + parentSeq + '</span>' : '') +
-    (p.summary_status ? statusPill(p.summary_status) + (p.summary_status !== 'success' && p.summary_status !== 'generating' ? ' <button class="retry-btn" onclick="retrySummary(' + p.id + ')">重试</button>' : '') : '') +
-    vectorPill(p) +
-    '</div>';
   if (isTool) {
-    // 工具卡: 仅显示观察摘要, 不显示原始调用信息
-    return head + renderSummary(p);
+    // TOOL 卡布局: 顶行(类型徽章+项目名+归属) → 标题 → 结果 → 底行(ID+时间+向量化状态)
+    const meta = parseMeta(p.summary_meta);
+    const pkey = p.claude_prompt_id ? (p.session_id + '|' + p.claude_prompt_id) : null;
+    const parentSeq = pkey ? maps.seqByClaudePid[pkey] : null;
+    const parentId = pkey ? maps.idByClaudePid[pkey] : null;
+    const proj = p.project_dir ? (p.project_dir.split('/').pop() || p.project_dir) : '';
+    const topRow = '<div class="card-head">' +
+      obsBadge(meta && meta.type) +
+      (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '') +
+      (parentSeq ? '<span class="parent-link' + (parentId ? ' parent-jump' : '') + '"' + (parentId ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"' : '') + '>↳ 归属提示词 #' + parentSeq + '</span>' : '') +
+      '</div>';
+    const body = meta ? (meta.title ? '<div class="tool-title">' + esc(meta.title) + '</div>' : '') : '';
+    const foot = '<div class="card-foot"><span class="card-meta">#' + p.id + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
+    return topRow + body + foot;
   }
-  // PROMPT 卡: 提示词 + 结果摘要 + 注入记忆 + 内联详情(查看原始响应, markdown 渲染)
-  const prompt = '<div class="card-prompt">' + esc(trunc(p.prompt, 500)) + '</div>';
+  // PROMPT 卡: 顶行(badge+项目名+摘要状态) → 提示词标题 → 结果摘要 → 注入记忆 → 详情 → 底行(ID+时间+向量化)
+  const proj = p.project_dir ? (p.project_dir.split('/').pop() || p.project_dir) : '';
+  const head = '<div class="card-head">' +
+    '<span class="tag">PROMPT</span>' +
+    (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '') +
+    (p.summary_status ? statusPill(p.summary_status) + (p.summary_status !== 'success' && p.summary_status !== 'generating' ? ' <button class="retry-btn" onclick="retrySummary(' + p.id + ')">重试</button>' : '') : '') +
+    '</div>';
+  const promptTitle = p.prompt ? '<div class="prompt-title">' + esc(trunc(p.prompt, 500)) + '</div>' : '';
   const expanded = expandedDetails.has(p.id);
   const detailBtn = p.response ? '<button class="detail-btn" onclick="toggleDetail(' + p.id + ')">' + (expanded ? '收起详情' : '查看详情') + '</button>' : '';
   const detailInline = p.response ? '<div class="detail-inline" id="detail-' + p.id + '"' + (expanded ? '' : ' style="display:none"') + '>' +
     '<div class="detail-md">' + mdToHtml(p.response) + '</div></div>' : '';
-  return head + prompt + renderSummary(p) + renderInjected(p) + detailBtn + detailInline;
+  const foot = '<div class="card-foot"><span class="card-meta">#' + (maps.seqById[p.id] || p.id) + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
+  return head + promptTitle + renderSummary(p) + renderInjected(p) + detailBtn + detailInline + foot;
 }
 
 function render(list) {
@@ -565,6 +576,17 @@ function toggleDetail(id) {
   if (show) expandedDetails.add(id); else expandedDetails.delete(id);
   const btn = el.previousElementSibling;
   if (btn && btn.classList.contains('detail-btn')) btn.textContent = show ? '收起详情' : '查看详情';
+}
+
+// 跳转到归属 PROMPT 卡: 平滑滚动居中 + 闪烁高亮(TOOL 卡的"归属提示词"链接调用)
+function jumpToPrompt(id) {
+  const el = document.querySelector('.card[data-id="' + id + '"]');
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('card-flash');
+  void el.offsetWidth;  // 重置动画
+  el.classList.add('card-flash');
+  setTimeout(() => el.classList.remove('card-flash'), 1600);
 }
 
 // 周期刷新: 仅在数据指纹变化时重渲染, 并保留滚动位置; 设置打开时不刷新
