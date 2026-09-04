@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { openDb } = require('../lib/db');
-const { runStopBatch, runSessionSummary } = require('../lib/batch');
+const { runStopBatch, runSessionSummary, runVectorRetry } = require('../lib/batch');
 
 function freshDb(dim = 4) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-batch-'));
@@ -59,17 +59,20 @@ test('runStopBatch writes tool obs + result summary + 3 memories', async () => {
   await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
 
   // TOOL rows got summary_meta
-  const t2 = db.prepare("SELECT summary_meta, summary_status FROM prompts WHERE id=2").get();
-  const t3 = db.prepare("SELECT summary_meta, summary_status FROM prompts WHERE id=3").get();
+  const t2 = db.prepare("SELECT summary_meta, summary_status, vector_status FROM prompts WHERE id=2").get();
+  const t3 = db.prepare("SELECT summary_meta, summary_status, vector_status FROM prompts WHERE id=3").get();
   assert.ok(t2.summary_meta, 'tool row 2 missing summary_meta');
   assert.ok(t3.summary_meta, 'tool row 3 missing summary_meta');
   assert.equal(t2.summary_status, 'success');
   assert.equal(t3.summary_status, 'success');
+  assert.equal(t2.vector_status, 'success', 'tool 向量化成功应落 vector_status');
+  assert.equal(t3.vector_status, 'success');
 
   // PROMPT row got result summary
-  const p1 = db.prepare("SELECT summary, summary_status FROM prompts WHERE id=1").get();
+  const p1 = db.prepare("SELECT summary, summary_status, vector_status FROM prompts WHERE id=1").get();
   assert.ok(p1.summary, 'prompt row missing summary');
   assert.equal(p1.summary_status, 'success');
+  assert.equal(p1.vector_status, 'success', 'result 向量化成功应落 vector_status');
 
   // memories_meta has 3 rows (2 tool + 1 result), all not skip
   const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
@@ -113,12 +116,15 @@ test('runStopBatch keeps success status when vectorization fails', async () => {
   const llmMod = makeLlmMod();
   await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: throwingEmbed });
 
-  const t2 = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=2").get();
+  const t2 = db.prepare("SELECT summary_status, summary_meta, vector_status, vector_error FROM prompts WHERE id=2").get();
   assert.equal(t2.summary_status, 'success', '工具摘要已成功, 向量化失败不应回退');
   assert.ok(t2.summary_meta, '工具摘要内容应已落库');
-  const p1 = db.prepare("SELECT summary_status, summary FROM prompts WHERE id=1").get();
+  assert.equal(t2.vector_status, 'failed', '向量化失败应落 vector_status=failed');
+  assert.ok(String(t2.vector_error).includes('ollama timeout'), '向量化失败原因应落 vector_error');
+  const p1 = db.prepare("SELECT summary_status, summary, vector_status, vector_error FROM prompts WHERE id=1").get();
   assert.equal(p1.summary_status, 'success', 'PROMPT 摘要已成功, 向量化失败不应回退');
   assert.ok(p1.summary, 'PROMPT 摘要内容应已落库');
+  assert.equal(p1.vector_status, 'failed', 'result 向量化失败应落 vector_status=failed');
   // 向量化全失败 → memories_meta 无新增
   const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
   assert.equal(memCount, 0);
@@ -167,4 +173,27 @@ test('runSessionSummary writes session_summaries row + 1 memory', async () => {
   assert.ok(ss.request);
   const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE entity_type='session'").get().c;
   assert.equal(memCount, 1);
+});
+
+test('runVectorRetry re-embeds failed/missing vectors for successful summaries', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  // 摘要成功但向量失败的历史行(TOOL + PROMPT), summary_updated_at 设为 2 分钟前
+  const old = new Date(Date.now() - 120000).toISOString();
+  db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, tool_name, summary_status, summary_meta, vector_status, vector_error, summary_updated_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run(10, 's1', '/p', 'TOOL', 'Bash', 'success', '{"title":"t","action":"a","type":"change","concepts":[],"filesChanged":[],"result":"r"}', 'failed', 'old error', old, old);
+  db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, summary_status, summary_meta, vector_status, vector_error, summary_updated_at, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+    .run(11, 's1', '/p', 'PROMPT', 'success', '{"request":"rq","completed":"cp"}', 'failed', 'old error', old, old);
+  // 刚摘要成功的行(1 分钟内)不应被补齐抢跑, 避免与实时向量化竞争
+  const fresh = new Date().toISOString();
+  db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, summary_status, summary_meta, summary_updated_at, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(12, 's1', '/p', 'PROMPT', 'success', '{"request":"fresh"}', fresh, fresh);
+
+  const r = await runVectorRetry({ db, cfg: baseCfg, embedFn: fakeEmbed, limit: 20 });
+  assert.equal(r.scanned, 2, '刚成功的行不在扫描范围');
+  assert.equal(r.ok, 2);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c, 2);
+  assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=10").get().vector_status, 'success');
+  assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=11").get().vector_status, 'success');
+  assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=12").get().vector_status, '', '1 分钟内的行不补齐');
 });
