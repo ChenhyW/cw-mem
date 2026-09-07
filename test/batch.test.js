@@ -44,65 +44,64 @@ const baseCfg = {
   queue: { pollMs: 50, quiescenceSeconds: 0.05, toolGroupMax: 6, sweepIntervalSeconds: 60, spool: { enabled: false } }
 };
 
-test('runStopBatch writes tool obs + result summary + 3 memories', async () => {
+test('runStopBatch reads pre-seeded tool summaries into the result template', async () => {
   const { db } = freshDb();
-  // seed: session + 1 PROMPT + 2 TOOL rows + tool_details
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
   db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
     .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'final response text', '2026-09-03T00:00:00Z');
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
-    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', '2026-09-03T00:00:01Z');
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
-    .run(3, 's1', 'cp1', '/p', 'TOOL', 'Write', 'Write: a.js', '2026-09-03T00:00:02Z');
-  db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
-    .run(2, 'tu1', 'Bash', '{"command":"ls"}', '{"stdout":"a\\nb"}', '2026-09-03T00:00:01Z');
-  db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
-    .run(3, 'tu2', 'Write', '{"path":"a.js"}', '{"ok":true}', '2026-09-03T00:00:02Z');
+  // 预置已摘要的 TOOL 行(runToolGroupSummary 的产物), 含一行损坏 meta 验证容错
+  const seed = (id, meta) => db.prepare(
+    "INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, summary_status, summary_meta, vector_status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
+  ).run(id, 's1', 'cp1', '/p', 'TOOL', 'Write', 'success', meta, 'success', '2026-09-03T00:00:0' + id + 'Z');
+  seed(2, JSON.stringify({ title: '改了 a.js', type: 'change', concepts: [], filesChanged: ['a.js'], result: 'ok', sideEffect: '' }));
+  seed(3, '{broken json');
+  seed(4, JSON.stringify({ title: '改了 b.js', type: 'change', concepts: [], filesChanged: ['b.js'], result: 'ok', sideEffect: '' }));
 
-  const llmMod = makeLlmMod();
-  await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+  let resultFields = null;
+  const llmMod = {
+    ...makeLlmMod(),
+    summarize: async (o) => { if (o.kind === 'result') resultFields = o.fields; return makeLlmMod().summarize(o); }
+  };
+  const r = await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+  assert.equal(r.status, 'success');
 
-  // TOOL rows got summary_meta
-  const t2 = db.prepare("SELECT summary_meta, summary_status, vector_status FROM prompts WHERE id=2").get();
-  const t3 = db.prepare("SELECT summary_meta, summary_status, vector_status FROM prompts WHERE id=3").get();
-  assert.ok(t2.summary_meta, 'tool row 2 missing summary_meta');
-  assert.ok(t3.summary_meta, 'tool row 3 missing summary_meta');
-  assert.equal(t2.summary_status, 'success');
-  assert.equal(t3.summary_status, 'success');
-  assert.equal(t2.vector_status, 'success', 'tool 向量化成功应落 vector_status');
-  assert.equal(t3.vector_status, 'success');
-
-  // PROMPT row got result summary
-  const p1 = db.prepare("SELECT summary, summary_status, vector_status FROM prompts WHERE id=1").get();
-  assert.ok(p1.summary, 'prompt row missing summary');
-  assert.equal(p1.summary_status, 'success');
-  assert.equal(p1.vector_status, 'success', 'result 向量化成功应落 vector_status');
-
-  // memories_meta has 3 rows (2 tool + 1 result), all not skip
-  const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
-  assert.equal(memCount, 3);
-  const skipCount = db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE type='skip'").get().c;
-  assert.equal(skipCount, 0);
+  // 两条有效工具观察进入 result 模板; 损坏行被跳过而非炸掉整个 result 摘要
+  assert.ok(resultFields.tool_observations.includes('改了 a.js'), '预置工具观察应进入 result 模板');
+  assert.ok(resultFields.tool_observations.includes('改了 b.js'));
+  assert.ok(!resultFields.tool_observations.includes('broken'), '损坏 meta 应被跳过');
+  // runStopBatch 只写 result 向量; TOOL 行由 Consumer 负责, 此处不触碰
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE entity_type='tool'").get().c, 0);
 });
 
-test('runStopBatch skips tool obs when toolSummary disabled', async () => {
+test('runStopBatch toolObsText falls back to 无 when no tool summaries', async () => {
   const { db } = freshDb();
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
   db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
     .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
-    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', '2026-09-03T00:00:00Z');
 
-  const cfg = { ...baseCfg, toolSummary: { enabled: false, skipMode: 'on' } };
-  const llmMod = makeLlmMod();
-  await runStopBatch({ db, cfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+  let resultFields = null;
+  const llmMod = {
+    ...makeLlmMod(),
+    summarize: async (o) => { if (o.kind === 'result') resultFields = o.fields; return makeLlmMod().summarize(o); }
+  };
+  const r = await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+  assert.equal(r.status, 'success', '无 tool 摘要也应能产出 result 摘要');
+  assert.equal(resultFields.tool_observations, '无', '无工具观察时应回落为"无"');
+});
 
-  // tool row should NOT have summary_meta
-  const t2 = db.prepare("SELECT summary_meta FROM prompts WHERE id=2").get();
-  assert.ok(!t2.summary_meta);
-  // result summary still written; memories_meta has 1 (result only)
-  const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
-  assert.equal(memCount, 1);
+test('runStopBatch invalid result json becomes retryable, not failed_final', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
+  const llmMod = { ...makeLlmMod(), summarize: async () => 'not json at all' };
+
+  const r = await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
+  assert.equal(r.status, 'failed');
+  const p = db.prepare("SELECT summary_status, retry_attempts FROM prompts WHERE id=1").get();
+  assert.notEqual(p.summary_status, 'failed_final', 'invalid json 是可重试的瞬时故障, 不应永久放弃');
+  assert.equal(p.summary_status, 'failed_pending_retry');
 });
 
 test('runStopBatch keeps success status when vectorization fails', async () => {
@@ -110,38 +109,28 @@ test('runStopBatch keeps success status when vectorization fails', async () => {
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
   db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
     .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
-    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', '2026-09-03T00:00:01Z');
-  db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
-    .run(2, 'tu1', 'Bash', '{"command":"ls"}', '{"stdout":"a"}', '2026-09-03T00:00:01Z');
 
   // 向量化全程抛错(模拟 ollama 超时/维度不匹配)
   const throwingEmbed = async () => { throw new Error('ollama timeout'); };
-  const llmMod = makeLlmMod();
-  await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: throwingEmbed });
+  const r = await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod: makeLlmMod(), embedFn: throwingEmbed });
+  assert.equal(r.status, 'success', '向量化失败不应判为失败(摘要已落库)');
 
-  const t2 = db.prepare("SELECT summary_status, summary_meta, vector_status, vector_error FROM prompts WHERE id=2").get();
-  assert.equal(t2.summary_status, 'success', '工具摘要已成功, 向量化失败不应回退');
-  assert.ok(t2.summary_meta, '工具摘要内容应已落库');
-  assert.equal(t2.vector_status, 'failed', '向量化失败应落 vector_status=failed');
-  assert.ok(String(t2.vector_error).includes('ollama timeout'), '向量化失败原因应落 vector_error');
   const p1 = db.prepare("SELECT summary_status, summary, vector_status, vector_error FROM prompts WHERE id=1").get();
-  assert.equal(p1.summary_status, 'success', 'PROMPT 摘要已成功, 向量化失败不应回退');
-  assert.ok(p1.summary, 'PROMPT 摘要内容应已落库');
-  assert.equal(p1.vector_status, 'failed', 'result 向量化失败应落 vector_status=failed');
-  // 向量化全失败 → memories_meta 无新增
-  const memCount = db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c;
-  assert.equal(memCount, 0);
+  assert.equal(p1.summary_status, 'success', '摘要已成功, 向量化失败不应回退');
+  assert.ok(p1.summary, '摘要内容应已落库');
+  assert.equal(p1.vector_status, 'failed', '向量化失败应落 vector_status=failed');
+  assert.ok(String(p1.vector_error).includes('ollama timeout'), '失败原因应落 vector_error');
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c, 0, '向量化全失败 → 无向量');
 });
 
-test('runStopBatch does not redo already-success tool observations', async () => {
+test('runStopBatch never re-summarizes tool rows (queue owns that)', async () => {
   const { db } = freshDb();
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
   db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
     .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'resp', '2026-09-03T00:00:00Z');
-  // TOOL 行已 success: 父 PROMPT 重试时不应被重做, 也不应回退成 failed
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, summary_status, summary_meta, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
-    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', 'success', '{"title":"已成功","type":"change","concepts":[],"filesChanged":[],"result":"ok"}', '2026-09-03T00:00:01Z');
+  // TOOL 行已 success: runStopBatch 不应重做, 也不应回退成 failed(历史回归 8e61236 的防护)
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, summary_status, summary_meta, vector_status, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run(2, 's1', 'cp1', '/p', 'TOOL', 'Bash', 'Bash: ls', 'success', '{"title":"已成功","type":"change","concepts":[],"filesChanged":[],"result":"ok"}', 'success', '2026-09-03T00:00:01Z');
   db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
     .run(2, 'tu1', 'Bash', '{"command":"ls"}', '{"stdout":"a"}', '2026-09-03T00:00:01Z');
 
@@ -150,16 +139,17 @@ test('runStopBatch does not redo already-success tool observations', async () =>
   const llmMod = {
     ...base,
     summarize: async ({ kind }) => {
-      if (kind === 'tool') { toolCalls++; throw new Error('success tool should not be re-summarized'); }
+      if (kind === 'tool' || kind === 'tool_batch') toolCalls++;
       return base.summarize({ kind });
     }
   };
   await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
 
-  assert.equal(toolCalls, 0, '已成功的工具观察不应再调 LLM');
-  const t2 = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=2").get();
+  assert.equal(toolCalls, 0, 'runStopBatch 不应再发起任何工具摘要调用');
+  const t2 = db.prepare("SELECT summary_status, summary_meta, vector_status FROM prompts WHERE id=2").get();
   assert.equal(t2.summary_status, 'success', '已成功工具状态不应被回退');
   assert.equal(JSON.parse(t2.summary_meta).title, '已成功', '原摘要内容不应被覆盖');
+  assert.equal(t2.vector_status, 'success', '原向量化状态不应被改动');
 });
 
 test('runSessionSummary writes session_summaries row + 1 memory', async () => {
@@ -200,47 +190,6 @@ test('runVectorRetry re-embeds failed/missing vectors for successful summaries',
   assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=10").get().vector_status, 'success');
   assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=11").get().vector_status, 'success');
   assert.equal(db.prepare("SELECT vector_status FROM prompts WHERE id=12").get().vector_status, '', '1 分钟内的行不补齐');
-});
-
-test('runStopBatch merges consecutive same-tool calls into one observation', async () => {
-  const { db } = freshDb();
-  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
-  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
-    .run(1, 's1', 'cp1', '/p', 'PROMPT', '改文件', 'resp', '2026-09-04T00:00:00Z');
-  // 3 个连续 Edit(同 tool_name) → 应合并为 1 次 tool_batch 调用
-  for (const id of [2, 3, 4]) {
-    db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, prompt, created_at) VALUES(?,?,?,?,?,?,?,?)")
-      .run(id, 's1', 'cp1', '/p', 'TOOL', 'Edit', 'Edit: ' + id, '2026-09-04T00:00:0' + id + 'Z');
-    db.prepare("INSERT INTO tool_details(prompt_id, tool_use_id, tool_name, input_json, output_json, created_at) VALUES(?,?,?,?,?,?)")
-      .run(id, 'tu' + id, 'Edit', '{"file_path":"f' + id + '.js"}', '{"ok":true}', '2026-09-04T00:00:0' + id + 'Z');
-  }
-
-  let batchCalls = 0, singleCalls = 0;
-  const base = makeLlmMod();
-  const llmMod = {
-    ...base,
-    summarize: async (o) => {
-      if (o.kind === 'tool_batch') { batchCalls++; return base.summarize(o); }
-      if (o.kind === 'tool') { singleCalls++; return base.summarize(o); }
-      return base.summarize(o);
-    }
-  };
-  await runStopBatch({ db, cfg: baseCfg, promptRowId: 1, llmMod, embedFn: fakeEmbed });
-
-  assert.equal(batchCalls, 1, '3 个连续 Edit 合并为 1 次 tool_batch 调用');
-  assert.equal(singleCalls, 0, '不应再逐条 tool 调用');
-  const first = db.prepare("SELECT summary_meta, summary_status FROM prompts WHERE id=2").get();
-  assert.ok(first.summary_meta, '合并观察落在首行(id=2)');
-  assert.equal(first.summary_status, 'success');
-  // 其余行: success 但无 meta(UI 渲染过滤, 不单独向量化)
-  for (const id of [3, 4]) {
-    const r = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=?").get(id);
-    assert.equal(r.summary_status, 'success', '其余行标记 success');
-    assert.ok(!r.summary_meta, '其余行无 meta(UI 隐藏)');
-  }
-  // 只为首行写 1 条 tool 向量 + 1 条 result 向量
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE entity_type='tool'").get().c, 1);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta").get().c, 2);
 });
 
 // ─── session 摘要: 退出时不得产出空摘要 ─────────────────────────
@@ -323,8 +272,9 @@ test('findSessionsNeedingSummary picks only ended sessions with input and no sum
   const ins = (id, ended, hasSummary) => {
     db.prepare("INSERT INTO sessions(id, project_dir, ended_at) VALUES(?,?,?)").run(id, '/p', ended);
     if (hasSummary) {
-      db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, summary_meta, created_at) VALUES(?,?,?,?,?,?)")
-        .run(1, id, '/p', 'PROMPT', '{"request":"x"}', '2026-09-03T00:00:00Z');
+      // prompts.id 不自填: 三次 hasSummary=true 的调用若都写死 id=1 会撞 PRIMARY KEY
+      db.prepare("INSERT INTO prompts(session_id, project_dir, type, summary_meta, created_at) VALUES(?,?,?,?,?)")
+        .run(id, '/p', 'PROMPT', '{"request":"x"}', '2026-09-03T00:00:00Z');
     }
   };
   ins('s-need', '2026-09-03T00:00:00Z', true);   // 应入选
