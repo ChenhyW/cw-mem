@@ -75,9 +75,9 @@ class Queue {                              // 全局 FIFO
 class Lane {                               // per-session 串行链：同 session 严格 FIFO
   #chain = Promise.resolve();
   run(fn) {
-    const r = this.#chain.then(() => fn(), () => fn());
-    this.#chain = r.then(() => {}, () => {});
-    return r;
+    const r = this.#chain.then(() => fn(), () => fn());   // 无论上一条 resolve/reject 都跑 fn
+    this.#chain = r.then(() => {}, () => {});              // 链本身永不 reject
+    return r.then(() => {}, () => {});                      // 返回值也永不 reject: 只做串行化, 吞掉 fn 的 rejection, 不让 #loop 死
   }
 }
 
@@ -147,7 +147,7 @@ class Consumer {
 
 ```js
 push(item) { this.#queue.push(item); if (this.#idle) this.#wake(); }
-#wake() { this.#idle = false; setImmediate(() => this.#loop()); }
+#wake() { clearTimeout(this.#idleTimer); this.#idle = false; setImmediate(() => this.#loop()); }
 
 async #loop() {
   for (;;) {
@@ -191,9 +191,8 @@ async #handle(item) {
   }
   // 不同文件 或 已满 → 对之前那组做聚合摘要，用当前 item 开新组
   const closed = acc.group;
-  acc.group = null;                                        // 先摘出，避免异常后重复摘要
-  try { await this.#summarizeGroup(item.sessionId, closed, 0); }
-  catch (e) { this.#retryGroup(item.sessionId, closed, 0, e); }
+  acc.group = null;                                        // 先摘出, 避免 #summarizeGroup 内部意外异常后旧组残留
+  await this.#summarizeGroup(item.sessionId, closed, 0);   // 不抛: LLM 失败已落行状态, 意外异常内部兜底
   acc.group = { toolTarget: item.toolTarget, toolName: item.toolName, ids: [item.toolRowId] };
   return this.#arm(item.sessionId);
 }
@@ -210,8 +209,23 @@ async #flush(sessionId) {
   clearTimeout(acc.timer);
   if (!acc.group) return;
   const g = acc.group; acc.group = null;
-  try { await this.#summarizeGroup(sessionId, g, 0); }
-  catch (e) { this.#retryGroup(sessionId, g, 0, e); }
+  await this.#summarizeGroup(sessionId, g, 0);   // 不抛: LLM 失败已落行状态, 意外异常内部兜底
+}
+
+// 契约: runToolGroupSummary 对 LLM 失败返回 {status:'failed', retryable}, 不抛(行状态已落);
+// 仅对意外异常(DB 损坏等)抛, 在此 catch 兜底退避。重试靠重新入队 toolgroup item, 不阻塞 lane。
+async #summarizeGroup(sessionId, g, attempts) {
+  let r;
+  try { r = await runToolGroupSummary({ db, cfg: this.cfg(), toolRowIds: g.ids, toolName: g.toolName, llmMod, embedFn }); }
+  catch (e) {                                              // 意外异常
+    if (attempts < this.cfg().llm.maxRetries)
+      setTimeout(() => this.push({ kind:'toolgroup', sessionId, toolRowIds: g.ids, toolName: g.toolName, attempts: attempts+1 }),
+                 Math.min(this.cfg().llm.retryIntervalSeconds * 2 ** attempts, 600) * 1000).unref();
+    return;
+  }
+  if (r.status === 'failed' && r.retryable && attempts < this.cfg().llm.maxRetries)
+    setTimeout(() => this.push({ kind:'toolgroup', sessionId, toolRowIds: g.ids, toolName: g.toolName, attempts: attempts+1 }),
+               Math.min(this.cfg().llm.retryIntervalSeconds * 2 ** attempts, 600) * 1000).unref();
 }
 ```
 
@@ -258,8 +272,10 @@ async #flush(sessionId) {
 ```js
 async function runToolGroupSummary({ db, cfg, toolRowIds, llmMod, embedFn }) {
   // 取 tool_details → _truncate(fieldLimit) → llm.summarize(kind:'tool_batch')
-  // → validateObservation → 落首行 summary_meta，其余行 success 无 meta → 向量化首行
-  // 返回 { status, retryable: [rowId] }
+  // → validateObservation → 落首行 summary_meta, 其余行 success 无 meta → 向量化首行
+  // 失败时对组内所有行调 _applyFailure(行级状态机已落 retry_attempts / summary_status)
+  // 返回 { status:'success'|'failed', retryable: bool }   ← LLM 失败不抛(已落行状态)
+  // 仅对意外异常(DB 损坏等)抛, 由 consumer 的 #summarizeGroup 兜底退避
 }
 ```
 
@@ -274,9 +290,10 @@ const done = db.prepare(`
     AND summary_status='success' AND COALESCE(summary_meta,'')<>''
   ORDER BY id ASC`).all(row.claude_prompt_id, row.session_id);
 const toolObsList = done.map(r => {
-  const m = JSON.parse(r.summary_meta);
+  let m = null; try { m = JSON.parse(r.summary_meta); } catch (e) { return null; }   // 损坏行跳过, 不让一次坏数据杀死 runStopBatch
+  if (!m) return null;
   return { title: m.title, type: m.type, files: m.filesChanged || [] };
-});
+}).filter(Boolean);
 ```
 
 `toolObsText` 渲染（`batch.js:207-215`）不动，字段形状一致。某组失败时 result 摘要拿到更少的观察、`toolObsText` 回落 `'无'`——与现状一致。
@@ -328,7 +345,7 @@ if (r.status === 'skipped' && (item.attempts || 0) < cfg().llm.maxRetries) {
 
 **保留清单**：`prompts.retry_attempts` / `summary_status` 状态机、`_applyFailure`、`maxSummaryAttempts`、`llm.maxRetries`、`llm.retryIntervalSeconds`、UI 手动重试、`/api/vector/retry`、`runVectorRetry`、`recover()`。
 
-**重试粒度的收益**：现状重试单元是整个 turn，重跑会重新分组导致口径漂移（这轮合并 A+B+C，重试只合并 A，因为 B/C 已 success）。新方案重试单元是**一组工具调用**，row ids 冻结在 item 里，`filter summary_status!=='success'` 跳过已成功的行 → 口径稳定。
+**重试粒度的收益**：现状重试单元是整个 turn，重跑会重新分组导致口径漂移（这轮合并 A+B+C，重试时 B/C 已 success、只剩 A，分组口径变了）。新方案重试单元是**一组工具调用**，row ids 冻结在 item 里整组重跑；组内原子（`summarizeToolGroup` 要么整组成功要么整组 `_applyFailure`），没有"部分成功可跳过" → 口径稳定。
 
 ---
 
@@ -338,10 +355,17 @@ if (r.status === 'skipped' && (item.attempts || 0) < cfg().llm.maxRetries) {
 
 ```js
 function recover(db, consumer) {
-  // 1. 未摘要的 TOOL 行 → 按 (session_id, tool_target) 分桶
-  db.prepare(`SELECT id, session_id, tool_target, tool_name FROM prompts
-              WHERE type='TOOL' AND summary_status='' ORDER BY id`).all();
-  //    每桶 push { kind:'toolgroup', toolRowIds, toolName, sessionId }
+  // 1. 未完成摘要的 TOOL 行 → 按 (session_id, tool_target) 分桶, 每桶按 toolGroupMax 切片
+  //    覆盖三类: '' (从未处理) / failed_pending_retry (重试未超限) / generating 超 180s (崩溃在途)
+  //    进程死亡后 #summarizeGroup 的退避 setTimeout 没了, 必须由这里重新入队, 否则这类行永久孤立
+  db.prepare(`SELECT id, session_id, tool_target, tool_name, summary_status, retry_attempts, summary_updated_at
+              FROM prompts WHERE type='TOOL' AND (
+                summary_status = ''
+                OR (summary_status='failed_pending_retry' AND COALESCE(retry_attempts,0) < ?)
+                OR (summary_status='generating' AND summary_updated_at IS NOT NULL
+                    AND summary_updated_at < datetime('now','-' || ? || ' seconds'))
+              ) ORDER BY id`).all(maxAttempts, 180);
+  //    按 (session_id, tool_target) 分桶, 每桶按 toolGroupMax 切片, 每片 push { kind:'toolgroup', toolRowIds, toolName, sessionId }
 
   // 2. 需摘要的 PROMPT 行（沿用 runSummaryRetryRound 的条件）
   //    pending / failed_pending_retry 未超限 / generating 超 180s
@@ -364,7 +388,8 @@ function recover(db, consumer) {
 ```bash
 spool() {                                     # spool <path> <json-body>
   CFG="$CW_MEM_DATA_DIR/config.json"
-  [ -f "$CFG" ] && node -e "try{if(JSON.parse(require('fs').readFileSync('$CFG','utf8')).queue?.spool?.enabled!==true)process.exit(1)}catch(e){}" || exit 1
+  # config 不可读/malformed 时 fail-safe = 不 spool(丢弃, 与现状一致), 切不可吞错反而 spool
+  [ -f "$CFG" ] && node -e "try{if(JSON.parse(require('fs').readFileSync('$CFG','utf8')).queue?.spool?.enabled!==true)process.exit(1)}catch(e){process.exit(1)}" || exit 1
   mkdir -p "$CW_MEM_DATA_DIR/spool"
   node -e "require('fs').appendFileSync('$CW_MEM_DATA_DIR/spool/$(date +%s%3N)-$$.jsonl', JSON.stringify({path:process.argv[1], body:JSON.parse(process.argv[2])})+'\n')" "$1" "$2"
 }
@@ -373,7 +398,9 @@ r = post('/api/prompts/summarize', {...})
 if (!r.ok) { spool('/api/prompts/summarize', JSON.stringify({...})); log_warn('spooled'); }
 ```
 
-**server 侧排空**：启动时 + 每个 `sweepIntervalSeconds`：读取 `<dataDir>/spool/*.jsonl` 每行 → 执行与 POST 等价的写库 + `queue.push` → 删除文件。
+**server 侧排空**：启动时 + 每个 `sweepIntervalSeconds`：读取 `<dataDir>/spool/*.jsonl` 每行 → 调用对应端点的核心处理函数（`handleToolDetails` / `handleResponse` / `handleSummarize` 等，端点本身也调它，避免逻辑分叉）写库 + `queue.push` + 应用 `payloadMaxBytes` 截断 → 删除文件。
+
+**启动顺序**：drain spool（补写 DB）→ `recover()`（扫描 DB 重建待办）→ start consumer。spool 排空会改 DB 状态，必须在 `recover()` 之前，否则 recover 扫到的是缺了 spool 数据的 DB。
 
 **自举缺口**：spool 由 server 排，但若 server 一直不启动，文件永远躺在盘上（典型：机器重启后第一个 session 的 Stop 已 spooled）。
 
@@ -432,8 +459,8 @@ toolSummary: { enabled: false, skipMode: 'on', payloadMaxBytes: 524288 }  // 0�
 | `lib/queue.js` **新增** | `Queue` / `Lane` / `Accumulator` / `Consumer`（含 `#handle` 流式聚合）+ `recover()` + vector sweep + spool 排空 |
 | `lib/batch.js` | 删除 `runStopBatch` tool 阶段（`110-204`）；`runStopBatch` 改读已落库摘要；新增 `runToolGroupSummary`；统一 `invalid json` 失败待遇；`MAX_TOOL_GROUP` 改读配置 |
 | `lib/db.js` | `prompts` 新增 `tool_target TEXT` + 迁移（老行从 `tool_details.input_json` 回填 `file_path`，兜底 `tool_name`） |
-| `lib/server.js` | `/api/tool-details`、`/api/prompts/summarize`、`/api/sessions/summarize`、`/api/prompts/summarize-retry` 改为 push；删三个 retry round、三个 busy flag、总控 `setInterval`、`/api/prompts/tool-summary`；启动跑 `recover()`；新增 `POST /api/config` 的 `queue` / `toolSummary.payloadMaxBytes` 分支；新增 `GET /api/queue`（队列深度、打开的组、最老 item 年龄） |
-| `hooks-handlers/post-tool-use.sh` | `/api/prompts` body 加 `filePath`；`/api/tool-details` body 加 `sessionId` + `filePath`；source `_spool.sh` |
+| `lib/server.js` | `/api/tool-details`、`/api/prompts/summarize`、`/api/sessions/summarize`、`/api/prompts/summarize-retry` 改为 push；删三个 retry round、三个 busy flag、总控 `setInterval`、`/api/prompts/tool-summary`；启动顺序: drain spool → `recover()` → start consumer；端点核心逻辑抽成 `handleXxx` 函数供 spool drain 复用；新增 `POST /api/config` 的 `queue` / `toolSummary.payloadMaxBytes` 分支；新增 `GET /api/queue`（队列深度、打开的组、最老 item 年龄） |
+| `hooks-handlers/post-tool-use.sh` | `/api/prompts` body 加 `filePath`；`/api/tool-details` body 加 `sessionId` + `filePath`；source `_spool.sh` + `_ensure_server.sh` |
 | `hooks-handlers/{stop,user-prompt-submit,session-end}.sh` | source `_spool.sh` + `_ensure_server.sh` |
 | `hooks-handlers/session-start.sh` | lazy-start 抽到 `_ensure_server.sh` |
 | `hooks-handlers/_spool.sh` **新增** | `spool` 函数 |
