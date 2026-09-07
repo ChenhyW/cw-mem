@@ -35,3 +35,31 @@ test('mergeLlm rejects invalid provider', () => {
   const out = mergeLlm({ ...DEFAULT_CONFIG.llm }, { provider: 'gemini' });
   assert.equal(out.provider, 'openai-compatible');
 });
+
+test('loadConfig reads queue section with defaults', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-cfg-'));
+  const cfg = loadConfig(dir);
+  assert.equal(cfg.queue.pollMs, 200);
+  assert.equal(cfg.queue.quiescenceSeconds, 30);
+  assert.equal(cfg.queue.toolGroupMax, 6);
+  assert.equal(cfg.queue.sweepIntervalSeconds, 60);
+  assert.equal(cfg.queue.spool.enabled, false);
+  assert.equal(cfg.toolSummary.payloadMaxBytes, 524288);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('loadConfig clamps invalid queue values to defaults', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-cfg-'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+    queue: { pollMs: 5, quiescenceSeconds: 9999, toolGroupMax: 0, sweepIntervalSeconds: 1, spool: { enabled: 'yes' } },
+    toolSummary: { payloadMaxBytes: -1 }
+  }));
+  const cfg = loadConfig(dir);
+  assert.equal(cfg.queue.pollMs, 200);            // 5 < 50 → 回落
+  assert.equal(cfg.queue.quiescenceSeconds, 30);  // 9999 > 600 → 回落
+  assert.equal(cfg.queue.toolGroupMax, 6);        // 0 < 1 → 回落
+  assert.equal(cfg.queue.sweepIntervalSeconds, 60);
+  assert.equal(cfg.queue.spool.enabled, false);   // 非布尔 → 回落
+  assert.equal(cfg.toolSummary.payloadMaxBytes, 524288);
+  fs.rmSync(dir, { recursive: true });
+});
