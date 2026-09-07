@@ -37,3 +37,26 @@ test('insert and KNN query on memories_vec', () => {
   const rows = db.prepare('SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? ORDER BY distance LIMIT 1').all(q);
   assert.equal(rows[0].rowid, 1);
 });
+
+test('prompts has tool_target column and backfills from tool_details', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-db-'));
+  const { db } = openDb(dir, 4);
+  // 手造老 TOOL 行(无 tool_target) + tool_details 带 path
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, tool_name, created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(1, 's1', 'cp1', '/p', 'TOOL', 'Write', '2026-09-03T00:00:00Z');
+  db.prepare("INSERT INTO tool_details(prompt_id, tool_name, input_json, created_at) VALUES (?,?,?,?)")
+    .run(1, 'Write', '{"path":"/abs/lib/batch.js"}', '2026-09-03T00:00:00Z');
+  // 触发回填: reopen
+  db.close();
+  const { db: db2 } = openDb(dir, 4);
+  assert.equal(db2.prepare("SELECT tool_target FROM prompts WHERE id=1").get().tool_target, 'Write /abs/lib/batch.js');
+  // Bash 无 file_path → 兜底只留 tool_name(+ 分隔空格)
+  db2.prepare("INSERT INTO prompts(id, session_id, project_dir, type, tool_name, created_at) VALUES (?,?,?,?,?,?)")
+    .run(2, 's1', '/p', 'TOOL', 'Bash', '2026-09-03T00:00:01Z');
+  db2.prepare("INSERT INTO tool_details(prompt_id, tool_name, input_json, created_at) VALUES (?,?,?,?)")
+    .run(2, 'Bash', '{"command":"ls"}', '2026-09-03T00:00:01Z');
+  db2.close();
+  const { db: db3 } = openDb(dir, 4);
+  assert.equal(db3.prepare("SELECT tool_target FROM prompts WHERE id=2").get().tool_target, 'Bash ');
+  fs.rmSync(dir, { recursive: true });
+});
