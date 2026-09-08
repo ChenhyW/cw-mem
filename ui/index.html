@@ -261,6 +261,37 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
             <label>skip 模式 <span class="reboot-tag reboot-no">即时生效</span></label>
             <div class="field-input"><select id="sSkipMode"><option value="on">on(记录层跳过低信号 + LLM 软 skip)</option><option value="off">off(全记录, 仅 LLM 软 skip)</option></select></div>
           </div>
+          <div class="field">
+            <label>工具 I/O 上限(字节) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sPayloadMaxBytes" min="0" max="10485760"></div>
+            <div class="help">0 = 不截断; 否则头尾各半保留。防止单次大输出撑爆 cw-mem.db</div>
+          </div>
+        </div>
+        <div class="sg">
+          <div class="sg-title">队列</div>
+          <div class="field">
+            <label>空队列轮询间隔(ms) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sQueuePollMs" min="50" max="5000"></div>
+            <div class="help">只影响"从空到有"的响应延迟, 不影响处理速度</div>
+          </div>
+          <div class="field">
+            <label>静默兜底时长(秒) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sQuiescenceSeconds" min="5" max="600"></div>
+            <div class="help">该会话无新工具到达多久后强制 flush 打开的组; 正常 Stop 到达即 flush, 仅在 Stop 丢失时生效</div>
+          </div>
+          <div class="field">
+            <label>单组聚合上限 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sToolGroupMax" min="1" max="20"></div>
+          </div>
+          <div class="field">
+            <label>向量补齐周期(秒) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sSweepIntervalSeconds" min="10" max="3600"></div>
+          </div>
+          <div class="field">
+            <label>启用本地 spool 兜底 <span class="reboot-tag reboot-no">即时生效</span></label>
+            <label class="toggle"><input type="checkbox" id="sQueueSpool"><span class="track"></span></label>
+            <div class="help">hook 连不上 server 时写本地 spool, server 启动/周期排空; 关闭则失败即丢弃(现状行为)</div>
+          </div>
         </div>
         <div class="sg">
           <div class="sg-title">召回</div>
@@ -370,7 +401,7 @@ function mdToHtml(src) {
   const codes = [];
   src = src.replace(/```(\w*)\r?\n?([\s\S]*?)```/g, (m, lang, code) => {
     codes.push('<pre class="md-code"><code>' + esc(code.replace(/\n$/, '')) + '</code></pre>');
-    return ' C' + (codes.length - 1) + ' ';
+    return 'C' + (codes.length - 1) + '';
   });
   src = esc(src);
   const lines = src.split('\n');
@@ -400,7 +431,7 @@ function mdToHtml(src) {
     html += '<p>' + inlineMd(line) + '</p>';
   }
   closeLists(); if (inBq) html += '</blockquote>';
-  return html.replace(/ C(\d+) /g, (m, i) => codes[parseInt(i, 10)]);
+  return html.replace(/C(\d+)/g, (m, i) => codes[parseInt(i, 10)]);
 }
 
 // 展开中的内联详情(PROMPT 卡片), 重渲染后恢复
@@ -643,6 +674,12 @@ function renderSettingsForm(cfg) {
   document.getElementById('sOllamaDim').value = cfg.ollama.embedDim;
   document.getElementById('sToolSummaryEnabled').checked = cfg.toolSummary.enabled;
   document.getElementById('sSkipMode').value = cfg.toolSummary.skipMode;
+  document.getElementById('sPayloadMaxBytes').value = cfg.toolSummary.payloadMaxBytes;
+  document.getElementById('sQueuePollMs').value = cfg.queue.pollMs;
+  document.getElementById('sQuiescenceSeconds').value = cfg.queue.quiescenceSeconds;
+  document.getElementById('sToolGroupMax').value = cfg.queue.toolGroupMax;
+  document.getElementById('sSweepIntervalSeconds').value = cfg.queue.sweepIntervalSeconds;
+  document.getElementById('sQueueSpool').checked = cfg.queue.spool.enabled;
   document.getElementById('sTopK').value = cfg.recall.topK;
   document.getElementById('sMinScore').value = cfg.recall.minScore;
   document.getElementById('sSessionStartCount').value = cfg.recall.sessionStartCount;
@@ -674,7 +711,15 @@ function buildPayload() {
     },
     toolSummary: {
       enabled: document.getElementById('sToolSummaryEnabled').checked,
-      skipMode: document.getElementById('sSkipMode').value
+      skipMode: document.getElementById('sSkipMode').value,
+      payloadMaxBytes: parseInt(document.getElementById('sPayloadMaxBytes').value, 10)
+    },
+    queue: {
+      pollMs: parseInt(document.getElementById('sQueuePollMs').value, 10),
+      quiescenceSeconds: parseInt(document.getElementById('sQuiescenceSeconds').value, 10),
+      toolGroupMax: parseInt(document.getElementById('sToolGroupMax').value, 10),
+      sweepIntervalSeconds: parseInt(document.getElementById('sSweepIntervalSeconds').value, 10),
+      spool: { enabled: document.getElementById('sQueueSpool').checked }
     },
     recall: {
       topK: parseInt(document.getElementById('sTopK').value, 10),
