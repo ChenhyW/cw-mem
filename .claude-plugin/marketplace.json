@@ -1,6 +1,1 @@
-{
-  "name": "cw-mem",
-  "owner": { "name": "chenhy" },
-  "metadata": { "description": "轻量级持久化记忆插件" },
-  "plugins": [{ "name": "cw-mem", "version": "0.2.0", "source": ".", "description": "轻量级持久化记忆插件" }]
-}
+{"name": "cw-mem", "owner": {"name": "chenhy"}, "metadata": {"description": "轻量级持久化记忆插件"}, "plugins": [{"name": "cw-mem", "version": "0.2.0", "source": ".", "description": "轻量级持久化记忆插件"}], "version": "0.2.1"}

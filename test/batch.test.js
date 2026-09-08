@@ -316,6 +316,40 @@ test('runToolGroupSummary writes meta to first row, others success-no-meta, vect
   assert.equal(db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE entity_type='tool'").get().c, 1);
 });
 
+// 一张卡覆盖 N 次调用, 卡片必须能看出"N 次合并" —— count 落在首行 meta 上供 UI 渲染徽标。
+// validateObservation 是字段白名单, 所以 count 只能由生产代码在校验之后补。
+test('runToolGroupSummary records group size in summary_meta.count', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  for (const id of [2, 3, 4]) {
+    db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, tool_name, tool_target, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(id, 's1', '/p', 'TOOL', 'Write', 'Write /a.js', '2026-09-03T00:00:0' + id + 'Z');
+    db.prepare("INSERT INTO tool_details(prompt_id, tool_name, input_json, created_at) VALUES (?,?,?,?)")
+      .run(id, 'Write', '{"path":"/a.js"}', '2026-09-03T00:00:0' + id + 'Z');
+  }
+
+  const r = await runToolGroupSummary({ db, cfg: baseCfg, toolRowIds: [2, 3, 4], llmMod: makeLlmMod(), embedFn: fakeEmbed });
+  assert.equal(r.status, 'success');
+
+  const meta = JSON.parse(db.prepare("SELECT summary_meta FROM prompts WHERE id=2").get().summary_meta);
+  assert.equal(meta.count, 3, '首行 meta.count 应等于组内调用数');
+});
+
+test('runToolGroupSummary sets count=1 for a single-call group', async () => {
+  const { db } = freshDb();
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  db.prepare("INSERT INTO prompts(id, session_id, project_dir, type, tool_name, tool_target, created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(2, 's1', '/p', 'TOOL', 'Write', 'Write /a.js', '2026-09-03T00:00:02Z');
+  db.prepare("INSERT INTO tool_details(prompt_id, tool_name, input_json, created_at) VALUES (?,?,?,?)")
+    .run(2, 'Write', '{"path":"/a.js"}', '2026-09-03T00:00:02Z');
+
+  const r = await runToolGroupSummary({ db, cfg: baseCfg, toolRowIds: [2], llmMod: makeLlmMod(), embedFn: fakeEmbed });
+  assert.equal(r.status, 'success');
+
+  const meta = JSON.parse(db.prepare("SELECT summary_meta FROM prompts WHERE id=2").get().summary_meta);
+  assert.equal(meta.count, 1, '单调用组的 count 应为 1, UI 据此决定是否显示徽标');
+});
+
 test('runToolGroupSummary LLM failure marks retryable per row state machine', async () => {
   const { db } = freshDb();
   db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');

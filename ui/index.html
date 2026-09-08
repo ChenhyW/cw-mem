@@ -91,6 +91,8 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .obs-change { background:rgba(187,128,9,0.15); color:#d29922; }
 .obs-discovery { background:rgba(139,92,246,0.18); color:#a78bfa; }
 .obs-decision { background:rgba(255,166,87,0.15); color:#f0883e; }
+/* TOOL 卡聚合徽标: 这张卡是 N 次工具调用的合并摘要 */
+.group-badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; flex-shrink:0; background:rgba(188,140,76,0.16); color:#d29922; cursor:help; }
 .obs-security { background:rgba(248,81,73,0.28); color:#ff7b72; }
 .obs-skip { background:rgba(125,133,144,0.15); color:var(--text-muted); }
 .file-chip { display:inline-block; font-size:11px; font-family:ui-monospace,SFMono-Regular,monospace; background:var(--surface); border:1px solid var(--border); color:var(--text-muted); padding:1px 7px; border-radius:4px; margin:2px 4px 2px 0; word-break:break-all; }
@@ -529,6 +531,8 @@ function cardBody(p, maps) {
     const proj = p.project_dir ? (p.project_dir.split('/').pop() || p.project_dir) : '';
     const topRow = '<div class="card-head">' +
       obsBadge(meta && meta.type) +
+      // 一张卡是 N 次同文件工具调用的合并摘要, 组内其余行不渲染 —— 没有这个徽标看不出卡覆盖了几个调用
+      (meta && Number(meta.count) > 1 ? '<span class="group-badge" title="这张卡是 ' + Number(meta.count) + ' 次工具调用的合并摘要">' + Number(meta.count) + ' 次合并</span>' : '') +
       (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '') +
       (parentSeq ? '<span class="parent-link' + (parentId ? ' parent-jump' : '') + '"' + (parentId ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"' : '') + '>↳ 归属提示词 #' + parentSeq + '</span>' : '') +
       '</div>';
