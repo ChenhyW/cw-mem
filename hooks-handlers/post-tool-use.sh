@@ -37,11 +37,13 @@ try {
 " "$RAW_JSON" 2>/dev/null || true
 
 CW_MEM_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
+CW_MEM_SKIP_JS="$PLUGIN_ROOT/lib/skip.js" \
 CW_MEM_RAW_JSON="$RAW_JSON" node -e "
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const log = require(process.env.CW_MEM_LOG_JS);
+const isLowSignalTool = require(process.env.CW_MEM_SKIP_JS).isLowSignalTool;
 const raw = process.env.CW_MEM_RAW_JSON || '';
 let data = {};
 try { data = JSON.parse(raw); } catch(e) { log.warn('stdin parse failed: ' + e.message); }
@@ -75,17 +77,24 @@ function suppress() { console.log(JSON.stringify({ continue: true, suppressOutpu
 (async () => {
   if (!tool_name) { log.warn('PostToolUse missing tool_name, skipped'); suppress(); process.exit(0); }
 
-  // ── 读 config.toolSummary.enabled ──
+  // ── 读 config.toolSummary.enabled + skipMode ──
   const cfgPath = path.join(process.env.CW_MEM_DATA_DIR || (process.env.HOME||'') + '/.cw-mem', 'config.json');
   let toolSummaryEnabled = false;
+  let skipMode = 'on';
   if (fs.existsSync(cfgPath)) {
     try {
       const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
       if (c.toolSummary && typeof c.toolSummary.enabled === 'boolean') toolSummaryEnabled = c.toolSummary.enabled;
+      if (c.toolSummary && (c.toolSummary.skipMode === 'on' || c.toolSummary.skipMode === 'off')) skipMode = c.toolSummary.skipMode;
     } catch(e) { log.warn('config read failed: ' + e.message); }
   }
   if (!toolSummaryEnabled) {
     log.debug('tool recording disabled (toolSummary.enabled=false), skipped: tool=' + tool_name);
+    suppress(); process.exit(0);
+  }
+  // skipMode='on' 时记录层硬跳过低信号工具(纯读取/搜索/只读Bash/静默Bash), 省 DB 写入与后续 LLM 摘要
+  if (skipMode === 'on' && isLowSignalTool({ tool_name, tool_input: data.tool_input, tool_response: resp })) {
+    log.debug('low-signal tool skipped (skipMode=on): tool=' + tool_name);
     suppress(); process.exit(0);
   }
 

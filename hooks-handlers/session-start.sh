@@ -5,8 +5,10 @@
 # 行为:
 #   1. 确保 server 运行(lazy-start), 同步写 session(5s 超时, 保证后续 hook 有 session 行)
 #   2. GET /api/recall/session?project=<cwd> 取最近 N 条会话摘要作注入
-#   3. stdout: 注入走 hookSpecificOutput.additionalContext(模型消费);
-#      无内容时只发 systemMessage banner(用户可见, 不注入)
+#   3. stdout:
+#      - 注入文本走 hookSpecificOutput.additionalContext(模型消费)
+#      - systemMessage 横幅下同时展示注入文本(用户可见)
+#      - 无内容时只发 banner
 #
 # 闭环: SessionStart 注入是 mandatory, 即使无历史也发 banner 让用户知道已生效。
 # node 块的 stdout 即 hook stdout(不重定向), 最终 JSON 必须由 node 打印。
@@ -82,7 +84,9 @@ function emitBanner() {
 }
 function emitInjection(text) {
   if (text && String(text).trim()) {
-    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text }, systemMessage: '🧠 cw-mem 已生效 — 已注入过往会话摘要' }));
+    const banner = '🧠 cw-mem 已生效 — 已注入过往会话摘要';
+    // systemMessage 同时展示横幅 + 注入文本, 让用户在 Claude 界面也能看到具体记忆
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text }, systemMessage: banner + '\n\n' + text }));
   } else { emitBanner(); }
 }
 

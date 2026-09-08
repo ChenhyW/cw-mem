@@ -96,6 +96,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .file-chip { display:inline-block; font-size:11px; font-family:ui-monospace,SFMono-Regular,monospace; background:var(--surface); border:1px solid var(--border); color:var(--text-muted); padding:1px 7px; border-radius:4px; margin:2px 4px 2px 0; word-break:break-all; }
 .card-project { font-size:12px; font-weight:600; color:var(--text-muted); background:var(--surface); border:1px solid var(--border); padding:1px 8px; border-radius:5px; }
 .tool-title { font-size:14px; font-weight:600; color:var(--text); margin:2px 0 6px; line-height:1.4; }
+.tool-result { font-size:13px; color:var(--text); line-height:1.6; white-space:pre-wrap; word-break:break-word; margin-top:2px; opacity:0.92; }
 .prompt-title { font-size:14px; font-weight:600; color:var(--text); margin:2px 0 8px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
 .card-foot { display:flex; align-items:center; gap:10px; margin-top:10px; font-size:12px; color:var(--text-muted); flex-wrap:wrap; opacity:0.85; }
 .retry-btn { font-size:11px; background:var(--surface-alt); border:1px solid var(--border); color:var(--accent); padding:3px 10px; border-radius:5px; cursor:pointer; margin-left:8px; }
@@ -258,7 +259,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
           </div>
           <div class="field">
             <label>skip 模式 <span class="reboot-tag reboot-no">即时生效</span></label>
-            <div class="field-input"><select id="sSkipMode"><option value="on">on(低信号标记 skip, 保留审计)</option><option value="off">off</option></select></div>
+            <div class="field-input"><select id="sSkipMode"><option value="on">on(记录层跳过低信号 + LLM 软 skip)</option><option value="off">off(全记录, 仅 LLM 软 skip)</option></select></div>
           </div>
         </div>
         <div class="sg">
@@ -500,7 +501,10 @@ function cardBody(p, maps) {
       (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '') +
       (parentSeq ? '<span class="parent-link' + (parentId ? ' parent-jump' : '') + '"' + (parentId ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"' : '') + '>↳ 归属提示词 #' + parentSeq + '</span>' : '') +
       '</div>';
-    const body = meta ? (meta.title ? '<div class="tool-title">' + esc(meta.title) + '</div>' : '') : '';
+    const body = meta ?
+      (meta.title ? '<div class="tool-title">' + esc(meta.title) + '</div>' : '') +
+      (meta.result ? '<div class="tool-result">' + esc(meta.result) + '</div>' : '')
+      : '';
     const foot = '<div class="card-foot"><span class="card-meta">#' + p.id + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
     return topRow + body + foot;
   }
