@@ -94,7 +94,7 @@ class Consumer {
 }
 ```
 
-`toolTarget = toolName + '\u0000' + (filePath || '')` —— NUL 分隔，避免 toolName 与 filePath 拼接歧义。
+`toolTarget = toolName + ' ' + (filePath || '')`（空格分隔）。toolName 取自固定工具名集（`Edit`/`Write`/`Bash`/… 均不含空格），无歧义；不用 NUL 是因为 SQLite 经 `sqlite3_column_text` 取 TEXT 是 NUL 终止的，嵌入 NUL 有被截断的风险。
 `Edit` / `Write` / `NotebookEdit` 的 `tool_input.file_path` 可靠存在 → 按文件聚合；`Bash` / `Agent` / MCP / 其他无结构化 `file_path` → 退化为按工具名。**不尝试从 Bash command 正则提文件名**（`lib/skip.js` 已证明此类解析不可靠）。
 
 ---
