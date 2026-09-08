@@ -373,3 +373,50 @@ test('startFull drains spool, recovers, starts consuming, and stop() releases th
   c.stop();
   fs.rmSync(dir, { recursive: true });
 });
+
+// ── Task 10: 端到端 ──────────────────────────────────────────────────────────
+// 完整链路: tool 入队 → 流式聚合 flush → result 摘要(读到已落库的 tool 观察)
+//        → session 摘要(读到已落库的 result 摘要) → 向量化。Lane FIFO 保证顺序。
+test('end-to-end: tool items → flush → result → session', async () => {
+  const { db, dir } = freshDb();
+  const { llmMod, embedFn, cfg } = makeCtx(db);
+  db.prepare("INSERT INTO sessions(id, project_dir) VALUES(?,?)").run('s1', '/p');
+  db.prepare("INSERT INTO prompts(id, session_id, claude_prompt_id, project_dir, type, prompt, response, created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(1, 's1', 'cp1', '/p', 'PROMPT', '做某事', 'final resp', '2026-09-03T00:00:00Z');
+  seedTool(db, { id: 2, fp: '/a.js' });
+  seedTool(db, { id: 3, fp: '/a.js' });     // 同文件, 与 2 同组
+  seedTool(db, { id: 4, fp: '/b.js' });     // 不同文件, 触发前一组 flush
+
+  const c = new Consumer({ db, loadCfg: cfg, embedFn, llmMod });
+  c.start();
+  c.push({ kind: 'tool', sessionId: 's1', toolRowId: 2, toolTarget: 'Write /a.js' });
+  c.push({ kind: 'tool', sessionId: 's1', toolRowId: 3, toolTarget: 'Write /a.js' });
+  c.push({ kind: 'tool', sessionId: 's1', toolRowId: 4, toolTarget: 'Write /b.js' });
+  // result 必在 tool 组 flush 之后处理 —— handle 开头 await #flush 保证
+  c.push({ kind: 'result', sessionId: 's1', promptRowId: 1 });
+  db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run('2026-09-03T00:00:10Z', 's1');
+  c.push({ kind: 'session', sessionId: 's1' });
+  await SLEEP(300);
+  c.stop();
+
+  // tool 组: /a.js 首行(2)落 meta, 3 success 无 meta; /b.js(4)落 meta
+  assert.ok(db.prepare("SELECT summary_meta FROM prompts WHERE id=2").get().summary_meta, '/a.js 组首行应落 meta');
+  assert.ok(!db.prepare("SELECT summary_meta FROM prompts WHERE id=3").get().summary_meta, '/a.js 组非首行不应落 meta');
+  assert.equal(db.prepare("SELECT summary_status FROM prompts WHERE id=3").get().summary_status, 'success');
+  assert.ok(db.prepare("SELECT summary_meta FROM prompts WHERE id=4").get().summary_meta, '/b.js 组应落 meta');
+
+  // result 摘要完成且引用了 tool 观察
+  const p = db.prepare("SELECT summary_status, summary_meta FROM prompts WHERE id=1").get();
+  assert.equal(p.summary_status, 'success', 'result 摘要应完成');
+  assert.ok(p.summary_meta, 'result 摘要应落 meta');
+
+  // session 摘要完成
+  const ss = db.prepare("SELECT COUNT(*) c FROM session_summaries WHERE session_id='s1'").get();
+  assert.equal(ss.c, 1, '应有一条 session 摘要');
+
+  // 向量: 两组 tool 各一条 + result 一条 = 3
+  const vc = db.prepare("SELECT COUNT(*) c FROM memories_meta WHERE entity_type IN ('tool','result')").get().c;
+  assert.equal(vc, 3, '应写入 3 条向量(2 tool 组 + 1 result)');
+
+  fs.rmSync(dir, { recursive: true });
+});
