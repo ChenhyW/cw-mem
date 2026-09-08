@@ -1,1 +1,8 @@
-{"name": "cw-mem", "version": "0.2.1", "description": "Lightweight persistent memory plugin for Claude Code", "main": "lib/server.js", "scripts": {"test": "node --test 'test/*.test.js'", "start": "node lib/server.js"}, "dependencies": {"better-sqlite3": "^11.0.0", "sqlite-vec": "^0.1.6"}}
+{
+  "name": "cw-mem",
+  "version": "0.2.1",
+  "description": "Lightweight persistent memory plugin for Claude Code",
+  "main": "lib/server.js",
+  "scripts": { "test": "node --test 'test/*.test.js'", "start": "node lib/server.js" },
+  "dependencies": { "better-sqlite3": "^11.0.0", "sqlite-vec": "^0.1.6" }
+}
