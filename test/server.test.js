@@ -118,6 +118,79 @@ test('POST /api/config accepts queue section and payloadMaxBytes', async () => {
   assert.equal(onDisk.toolSummary.payloadMaxBytes, 1048576);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
 
+test('server drains a spool written while it was down', async () => {
+  const { startServer } = require('../lib/server');
+  const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-spool-'));
+  // 模拟 hook 在 server 宕机期间写下的兜底记录
+  fs.mkdirSync(path.join(spoolDir, 'spool'));
+  fs.writeFileSync(path.join(spoolDir, 'spool', '1700000000000-1.jsonl'),
+    JSON.stringify({ path: '/api/sessions', body: { sessionId: 'sS', projectDir: '/p' } }) + '\n' +
+    JSON.stringify({ path: '/api/prompts', body: {
+      sessionId: 'sS', prompt: 'Write: a.js', type: 'TOOL', toolName: 'Write',
+      claudePromptId: 'cp1', projectDir: '/p', filePath: '/a.js'
+    } }) + '\n');
+
+  const handle = await startServer({ dataDir: spoolDir, uiDir: path.join(__dirname,'..','ui'), port: 0 });
+  serverHandle = handle.server; port = handle.port;
+  try {
+    await SLEEP(200);
+    const sess = JSON.parse((await req('GET','/api/sessions')).body);
+    assert.ok(sess.sessions.some(s => s.id === 'sS'), 'spooled session 应已落库');
+
+    const prompts = JSON.parse((await req('GET','/api/prompts?sessionId=sS')).body);
+    assert.equal(prompts.total, 1, 'spooled TOOL 行应已落库');
+    assert.equal(prompts.prompts[0].tool_target, 'Write /a.js',
+      'tool_target 复合键应由排空时同一路径生成, 而非第二套写入逻辑');
+
+    assert.ok(!fs.existsSync(path.join(spoolDir, 'spool', '1700000000000-1.jsonl')),
+      '排空后 spool 文件应删除');
+    assert.equal(JSON.parse((await req('GET','/api/queue')).body).openGroups, 0,
+      'spool 排空不应产生未关闭的聚合组');
+  } finally {
+    serverHandle.close();
+    fs.rmSync(spoolDir, { recursive: true });
+  }
+});
+
+// 完整模拟 hook 在 server 宕机期间写下的三条记录 —— tool-details 拿不到自增 promptId,
+// 必须靠 tool_use_id 回退关联, 否则工具 I/O 会成为孤儿行(这正是最初的丢失路径)。
+test('spool replay of a full tool call reconstructs row, details and group', async () => {
+  const { startServer } = require('../lib/server');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-spool2-'));
+  fs.mkdirSync(path.join(d, 'spool'));
+  fs.writeFileSync(path.join(d, 'spool', '1.jsonl'),
+    JSON.stringify({ path: '/api/sessions', body: { sessionId: 'sS', projectDir: '/p' } }) + '\n' +
+    JSON.stringify({ path: '/api/prompts', body: {
+      sessionId: 'sS', prompt: 'Write: a.js', type: 'TOOL', toolName: 'Write',
+      toolUseId: 'tool_1', claudePromptId: 'cp1', projectDir: '/p', filePath: '/a.js'
+    } }) + '\n' +
+    JSON.stringify({ path: '/api/tool-details', body: {
+      promptId: null, sessionId: 'sS', filePath: '/a.js',
+      toolInput: { path: '/a.js', content: 'x' }, toolOutput: { stdout: 'ok' },
+      toolUseId: 'tool_1', toolName: 'Write', durationMs: 12
+    } }) + '\n');
+
+  const handle = await startServer({ dataDir: d, uiDir: path.join(__dirname,'..','ui'), port: 0 });
+  serverHandle = handle.server; port = handle.port;
+  try {
+    await SLEEP(150);
+    const prompts = JSON.parse((await req('GET','/api/prompts?sessionId=sS')).body);
+    assert.equal(prompts.total, 1);
+    assert.equal(prompts.prompts[0].tool_use_id, 'tool_1', 'TOOL 行应落 tool_use_id 供回退关联');
+    assert.equal(prompts.prompts[0].tool_target, 'Write /a.js');
+
+    const td = JSON.parse((await req('GET','/api/tool-details?id=' + prompts.prompts[0].id)).body);
+    assert.equal(td.input.path, '/a.js', 'tool_details 应挂到正确的 TOOL 行, 而非孤儿行');
+    assert.equal(td.output.stdout, 'ok');
+
+    const q = JSON.parse((await req('GET','/api/queue')).body);
+    assert.equal(q.openGroups, 1, '排空进来的 tool item 应开一个聚合组');
+  } finally {
+    serverHandle.close();
+    fs.rmSync(d, { recursive: true });
+  }
+});
+
 test('tool I/O is truncated to toolSummary.payloadMaxBytes', async () => { await boot(); try {
   await req('POST','/api/config', { toolSummary:{ payloadMaxBytes: 50 } });
   await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });

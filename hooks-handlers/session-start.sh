@@ -18,11 +18,13 @@ set -u
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 export SERVER_URL="${SERVER_URL:-http://localhost:37889}"
 SERVER_JS="$PLUGIN_ROOT/lib/server.js"
+export SERVER_JS
 DATA_DIR="${CW_MEM_DATA_DIR:-$HOME/.cw-mem}"
 export CW_MEM_DATA_DIR="$DATA_DIR"
 mkdir -p "$DATA_DIR"
 
 source "$(dirname "$0")/_log.sh"
+source "$(dirname "$0")/_ensure_server.sh"
 
 SESSION_JSON="$(cat)"
 
@@ -31,20 +33,9 @@ CWD="$(node -e "const i=process.argv[1]; try{const d=JSON.parse(i); process.stdo
 
 log_info "SessionStart received: session=$SESSION_ID, cwd=$CWD"
 
-# 确保 server 运行
-if ! curl -s --max-time 2 "$SERVER_URL/api/health" > /dev/null 2>&1; then
-  log_info "server not running, starting..."
-  nohup node "$SERVER_JS" "$DATA_DIR" "$PLUGIN_ROOT/ui" > "$DATA_DIR/server.log" 2>&1 &
-  for i in $(seq 1 10); do
-    if curl -s --max-time 1 "$SERVER_URL/api/health" > /dev/null 2>&1; then break; fi
-    sleep 0.5
-  done
-  if curl -s --max-time 1 "$SERVER_URL/api/health" > /dev/null 2>&1; then
-    log_info "server started"
-  else
-    log_warn "server failed to start within 5s"
-  fi
-fi
+# 确保 server 运行(lazy-start)。本 hook 是 session 第一现场, 给 5s 预算;
+# 拉不起来也无兜底可写 —— 注入只能静默降级, 后续 hook 会各自再试一次。
+ensure_server 5 || log_warn "server unavailable at session start"
 
 # 写 session + 取注入 + 打印最终 stdout JSON(node stdout = hook stdout)
 CW_MEM_LOG_JS="$PLUGIN_ROOT/hooks-handlers/_log.js" \
