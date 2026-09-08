@@ -29,14 +29,16 @@ git push -u origin main
 
 确认运行副本落在 `~/.claude/plugins/cache/cw-mem/cw-mem/<version>/`。
 
-**关键:在运行副本里安装依赖**(`node_modules/` 被 gitignore,不会随仓库分发;不装则 hook 调 `better-sqlite3` 直接报错):
+**关键:在运行副本里编译原生依赖**(`node_modules/` 被 gitignore,不会随仓库分发;不装则 hook 调 `better-sqlite3` 直接报错):
 
 ```bash
 cd ~/.claude/plugins/cache/cw-mem/cw-mem/<version>/
-npm install
+npm install          # 全新目录: 安装依赖并编译 better-sqlite3
+npm rebuild better-sqlite3 sqlite-vec   # 目录已存在 node_modules 时必须跑这个
 ```
 
-> `/plugin update` 后缓存会出现新版本目录,同样需要在新目录里重新 `npm install`。
+> `/plugin update` 后缓存会出现新版本目录,同样需要在新目录里重新编译。
+> **坑**:`/plugin update` 会预置一个 `node_modules/`(但缺 `better-sqlite3/build/`),此时 `npm install` 只输出 `up to date` 而**不编译原生二进制**,hook 一调 better-sqlite3 就炸。必须 `npm rebuild`。验证:`ls node_modules/better-sqlite3/build/Release/better_sqlite3.node` 存在即可。
 
 ## 3. 配置(UI)
 
@@ -71,13 +73,27 @@ node -e "const Database=require('better-sqlite3');const db=new Database(require(
 
 ## 5. 更新验证
 
-bump 版本后推送,在 Claude Code:
+发布流程(四步,顺序不能乱):
 
-```
-/plugin update
+```bash
+# 1. bump 版本 —— 三处必须一起改,缺一不可
+#    .claude-plugin/plugin.json        ← 关键: plugin update 比对的是它
+#    .claude-plugin/marketplace.json
+#    package.json
+# 2. 提交推送
+git add -A && git commit -m "chore(release): vX.Y.Z" && git push origin main
+# 3. 更新已安装插件(也可在 Claude Code 里 /plugin update)
+claude plugin marketplace update cw-mem && claude plugin update cw-mem@cw-mem
+# 4. 新缓存目录编译原生依赖(见 §2 的坑)
+cd ~/.claude/plugins/cache/cw-mem/cw-mem/<version>/ && npm rebuild better-sqlite3 sqlite-vec
+npm test    # 应在 74/74 全绿
 ```
 
-确认 `~/.claude/plugins/installed_plugins.json` 的 `lastUpdated` 变化,缓存目录出现新版本号。
+确认 `~/.claude/plugins/installed_plugins.json` 的 `version` / `installPath` / `gitCommitSha` 指向新版本。
+
+**坑**:只改 `marketplace.json` 不改 `plugin.json` 时,CLI 会报 `Plugin "cw-mem" is already at the latest version` 并静默跳过更新。
+
+**别忘了重启 server**:hooks 是 lazy-start `lib/server.js`,已启动的进程会一直跑旧版本路径,必须 kill 旧进程(下一次 hook 事件会自动从新版本拉起),或点 UI「保存并重启」。
 
 ## 闭环保证(已单测覆盖)
 
