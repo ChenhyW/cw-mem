@@ -4,8 +4,8 @@
 #
 # 行为:
 #   1. 同步 POST /api/sessions(确保) + POST /api/prompts(type=PROMPT)
-#   2. POST /api/recall/semantic {promptId, sessionId, project:cwd, prompt} → {text, hits}
-#      服务端把 injected_context 写回 PROMPT 行
+#   2. POST /api/recall/semantic {rowId, promptId, sessionId, project:cwd, prompt} → {text, hits}
+#      服务端把 injected_context 写回 step 1 刚落库的那一行(rowId = prompts 主键)
 #   3. stdout: 有注入文本 → hookSpecificOutput.additionalContext; 无 → continue+suppress
 # 闭环: UserPromptSubmit 注入是 mandatory。超时/失败静默, 不阻塞 Claude。
 
@@ -52,8 +52,10 @@ function suppress() { console.log(JSON.stringify({ continue: true, suppressOutpu
   await post('/api/sessions', { sessionId: SESSION_ID, projectDir: CWD });
   const r = await post('/api/prompts', { sessionId: SESSION_ID, prompt: PROMPT, type:'PROMPT', claudePromptId: PROMPT_ID, projectDir: CWD });
   log.info('prompt ' + (r.ok ? 'recorded id=' + (r.id||'-') : 'write FAILED') + ': session=' + SESSION_ID);
-  // 语义召回 + 注入
-  const s = await post('/api/recall/semantic', { promptId: PROMPT_ID, sessionId: SESSION_ID, project: CWD, prompt: PROMPT });
+  // 语义召回 + 注入。rowId = 刚落库的 prompts 主键, 服务端优先按它写回。
+  // 只传 promptId(claude 的 prompt_id)会把注入覆盖到同 id 的兄弟行上 ——
+  // claude 的 prompt_id 在同 session 内会重复(<task-notification> 与真实 prompt 共用)。
+  const s = await post('/api/recall/semantic', { rowId: r.id, promptId: PROMPT_ID, sessionId: SESSION_ID, project: CWD, prompt: PROMPT });
   if (s.ok && s.text && String(s.text).trim()) {
     log.info('injection: ' + (s.hits ? s.hits.length : 0) + ' hits, ' + s.text.length + ' chars');
     console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: s.text } }));

@@ -74,6 +74,18 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .inj-title { font-size:11px; font-weight:600; color:var(--text-muted); margin-bottom:4px; }
 .inj-hit { font-size:13px; margin:3px 0; }
 .inj-hit .score { color:var(--text-muted); font-size:11px; margin-left:6px; }
+/* 注入状态: 空 hits 和"没注入过"以前长得一模一样, 按状态区分才能判断注入是否生效 */
+.inj-status-ok { color:#3fb950; font-weight:700; }
+.inj-status-none { color:var(--text-muted); font-weight:700; }
+.inj-status-fail { color:#f85149; font-weight:700; }
+.inj-text { font-size:12px; color:var(--text); background:var(--surface-alt); border-radius:6px; padding:8px 10px; margin:6px 0 2px; white-space:pre-wrap; word-break:break-word; }
+.inj-error { font-size:12px; color:#f85149; margin:4px 0; word-break:break-word; }
+.inj-diag { font-size:11px; color:var(--text-muted); margin-top:6px; padding-top:6px; border-top:1px dashed var(--inj-border); }
+/* 视图切换: 提示词记录 / 会话摘要 */
+.view-tabs { display:flex; gap:8px; margin-bottom:16px; }
+.vt { background:var(--surface); border:1px solid var(--border); color:var(--text-muted); padding:6px 16px; border-radius:7px; cursor:pointer; font-size:13px; }
+.vt.active { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600; }
+.session-card .summary-label { background:var(--surface-alt); }
 .status-pill { font-size:11px; padding:2px 7px; border-radius:4px; }
 .status-pending { background:rgba(187,128,9,0.18); color:#d29922; }
 .status-success { background:rgba(46,160,67,0.18); color:#3fb950; }
@@ -157,13 +169,26 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
   </div>
 </div>
 <div class="container">
-  <div id="loading" class="loading"><div class="spinner"></div><div>加载中...</div></div>
-  <div id="empty" class="empty" style="display:none">
-    <h2>暂无记录</h2>
-    <p>在 Claude Code 中输入提示词后,记录会自动显示在这里。</p>
+  <div class="view-tabs">
+    <button class="vt active" id="vtPrompts" data-view="prompts" onclick="switchView('prompts')">提示词记录</button>
+    <button class="vt" id="vtSessions" data-view="sessions" onclick="switchView('sessions')">会话摘要</button>
   </div>
-  <div id="promptList" class="prompt-list"></div>
-  <button id="loadMore" class="load-more" style="display:none" onclick="loadMore()">加载更多</button>
+  <div id="promptView">
+    <div id="loading" class="loading"><div class="spinner"></div><div>加载中...</div></div>
+    <div id="empty" class="empty" style="display:none">
+      <h2>暂无记录</h2>
+      <p>在 Claude Code 中输入提示词后,记录会自动显示在这里。</p>
+    </div>
+    <div id="promptList" class="prompt-list"></div>
+    <button id="loadMore" class="load-more" style="display:none" onclick="loadMore()">加载更多</button>
+  </div>
+  <div id="sessionView" style="display:none">
+    <div id="sessionEmpty" class="empty" style="display:none">
+      <h2>暂无会话摘要</h2>
+      <p>会话结束时才生成摘要; 目前没有已结束且非空的会话。</p>
+    </div>
+    <div id="sessionList" class="prompt-list"></div>
+  </div>
 </div>
 
 <!-- 设置弹窗 -->
@@ -304,6 +329,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
           <div class="field">
             <label>minScore(注入阈值) <span class="reboot-tag reboot-no">即时生效</span></label>
             <div class="field-input"><input type="number" id="sMinScore" min="0" max="1" step="0.01"></div>
+            <div class="help">sim = 1/(1+L2), 归一化向量下取值 [0.414, 1.0]: 0.5≈余弦0.50, 0.6≈0.78, 0.7≈0.91(很严, 小模型通常达不到)。低于 0.414 等于不过滤; 高于语料实际可达值则永远 0 命中。建议 0.5～0.6。每张 PROMPT 卡的注入块会显示本次阈值/候选数/最高 sim, 可直接对照调参</div>
           </div>
           <div class="field">
             <label>SessionStart 注入条数 <span class="reboot-tag reboot-no">即时生效</span></label>
@@ -475,11 +501,31 @@ function statusPill(status) {
   return ' <span class="status-pill ' + cls + '">' + esc(status) + '</span>';
 }
 
+// 注入块: 只要发起过注入(injected_context 非空)就渲染状态, 即使 0 命中。
+// 旧实现在空 hits 时 return '', 和"从未注入"无法区分 —— 这正是"看不出注入是否生效"的根因。
 function renderInjected(p) {
   const inj = parseMeta(p.injected_context);
-  if (!inj || !inj.hits || !inj.hits.length) return '';
-  const hits = inj.hits.map(h => '<div class="inj-hit">• ' + esc(h.title || '#' + h.ref_id) + '<span class="score">score ' + (h.score || 0).toFixed(2) + '</span></div>').join('');
-  return '<div class="inj-block"><div class="inj-title">注入的记忆(' + inj.hits.length + ' 条)</div>' + hits + '</div>';
+  if (!inj) return '';
+  let status, cls;
+  if (inj.text) { status = '已注入'; cls = 'inj-status-ok'; }
+  else if (inj.error) { status = '注入失败'; cls = 'inj-status-fail'; }
+  else { status = '无命中(未注入)'; cls = 'inj-status-none'; }
+  let html = '<div class="inj-block"><div class="inj-title">记忆注入 · <span class="' + cls + '">' + status + '</span></div>';
+  // 实际发给模型的内容 —— 判断"注入是否生效"的唯一真相
+  if (inj.text) html += '<div class="inj-text">' + esc(trunc(inj.text, 800)) + '</div>';
+  if (inj.error) html += '<div class="inj-error">' + esc(trunc(inj.error, 200)) + '</div>';
+  if (inj.hits && inj.hits.length) {
+    const hits = inj.hits.map(h => '<div class="inj-hit">• ' + esc(h.title || '#' + h.ref_id) + '<span class="score">score ' + (h.score || 0).toFixed(3) + '</span></div>').join('');
+    html += '<div class="inj-hits">' + hits + '</div>';
+  }
+  // 诊断行: 阈值高于语料实际可达 sim 时会 0 命中且无 error, 只有这行能指出原因。
+  // 旧数据没有这些字段 → 显示 '—', 不报错。
+  if (inj.minScore != null) {
+    html += '<div class="inj-diag">阈值 ' + Number(inj.minScore).toFixed(2)
+      + ' · 候选 ' + (inj.candidates != null ? inj.candidates : '—')
+      + ' · 最高 sim ' + (inj.maxSim != null ? Number(inj.maxSim).toFixed(3) : '—') + '</div>';
+  }
+  return html + '</div>';
 }
 
 // 观察类型徽章(不在正文中以"类型:"展示)
@@ -598,8 +644,59 @@ async function loadPrompts(append) {
 function changeProject() {
   currentProject = document.getElementById('projectSelect').value;
   loadPrompts(false);
+  if (sessionViewVisible()) loadSessionSummaries();
 }
 function loadMore() { loadPrompts(true); }
+
+// ─── 会话摘要视图 ───
+// session_summaries 此前只有写入方和注入方, 没有任何只读端点, 所以界面上始终看不见。
+let sessionSummaries = [];
+
+function sessionViewVisible() {
+  return document.getElementById('sessionView').style.display !== 'none';
+}
+
+function switchView(view) {
+  document.querySelectorAll('.vt').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  document.getElementById('promptView').style.display = view === 'prompts' ? '' : 'none';
+  document.getElementById('sessionView').style.display = view === 'sessions' ? '' : 'none';
+  // 切回时重载, 否则要等下一个轮询周期才拿到新数据
+  if (view === 'sessions') loadSessionSummaries();
+  else loadPrompts(false);
+}
+
+// 会话摘要卡: 项目名 · 时间 · 6 个结构化字段(与 PROMPT 卡的结果摘要共用 summaryRow)
+function sessionCard(s) {
+  const proj = s.project_dir ? (s.project_dir.split('/').pop() || s.project_dir) : '';
+  const rows = [
+    summaryRow('请求', esc(s.request)),
+    summaryRow('调研', esc(s.investigated)),
+    summaryRow('学到', esc(s.learned)),
+    summaryRow('完成', esc(s.completed)),
+    summaryRow('下一步', esc(s.next_steps)),
+    summaryRow('备注', esc(s.notes))
+  ].filter(Boolean).join('');
+  const head = '<div class="card-head">'
+    + '<span class="tag">SESSION</span>'
+    + (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '')
+    + (s.ended_at ? '<span class="card-meta">会话结束于 ' + fmtTime(s.ended_at) + '</span>' : '')
+    + '</div>';
+  const foot = '<div class="card-foot">'
+    + '<span class="card-meta">摘要 #' + s.id + ' · ' + fmtTime(s.created_at) + '</span>'
+    + '<span class="card-meta" title="session_id">' + esc(s.session_id.slice(0, 8)) + '</span>'
+    + '</div>';
+  return '<div class="card session-card">' + head + rows + foot + '</div>';
+}
+
+async function loadSessionSummaries() {
+  const params = new URLSearchParams({ limit: 50, offset: 0 });
+  if (currentProject) params.set('project', currentProject);
+  let r;
+  try { r = await api('/api/session-summaries?' + params.toString()); } catch (e) { return; }
+  sessionSummaries = r.summaries || [];
+  document.getElementById('sessionEmpty').style.display = sessionSummaries.length ? 'none' : 'block';
+  document.getElementById('sessionList').innerHTML = sessionSummaries.map(sessionCard).join('');
+}
 
 async function retrySummary(id) {
   await api('/api/prompts/summarize-retry', 'POST', { id });
@@ -632,6 +729,8 @@ function jumpToPrompt(id) {
 async function refreshList() {
   if (document.hidden) return;
   if (document.getElementById('settingsMask').classList.contains('show')) return;
+  // 轮询只刷新当前可见的视图, 避免为一个看不见的视图发请求
+  if (sessionViewVisible()) { loadSessionSummaries(); return; }
   const limit = Math.max(offset, LIMIT);
   const params = new URLSearchParams({ limit, offset: 0 });
   if (currentProject) params.set('project', currentProject);

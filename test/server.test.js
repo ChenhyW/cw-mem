@@ -207,3 +207,93 @@ test('tool I/O is truncated to toolSummary.payloadMaxBytes', async () => { await
   assert.ok(Buffer.byteLength(JSON.stringify(stored.input)) <= 200,
     '落库 input 应被截断到上限附近, 实际 ' + Buffer.byteLength(JSON.stringify(stored.input)));
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// 回归: session_summaries 此前只有写入方(batch.js)和注入方(recall.js), 没有任何只读端点,
+// 所以库里已有摘要在 UI 上始终看不见。
+test('GET /api/session-summaries returns summaries with project filter and pagination', async () => { await boot(); try {
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  await req('POST','/api/sessions', { sessionId:'s2', projectDir:'/other' });
+  // session_summaries 的写入方是 batch.js 的 LLM 任务, 这里直接落库模拟其产物
+  const d = require('better-sqlite3')(path.join(dir, 'cw-mem.db'));
+  const ins = d.prepare('INSERT INTO session_summaries(session_id, request, learned, completed, next_steps, created_at) VALUES(?,?,?,?,?,?)');
+  ins.run('s1', '修 cw-mem 队列', '学到 X', '完成 Y', '下一步 Z', '2026-09-10T00:00:00.000Z');
+  ins.run('s2', '无关会话', '学到 A', null, null, '2026-09-11T00:00:00.000Z');
+  ins.run('s2', null, null, null, null, '2026-09-12T00:00:00.000Z');  // 全空, 应被过滤
+  d.close();
+
+  const all = JSON.parse((await req('GET','/api/session-summaries')).body);
+  assert.equal(all.total, 2, '全空摘要应被过滤, 实际 ' + all.total);
+  assert.equal(all.summaries.length, 2);
+  assert.equal(all.summaries[0].session_id, 's2', '应按 created_at 倒序');
+  assert.equal(all.summaries[0].project_dir, '/other', '应 JOIN sessions 补出 project_dir');
+  assert.equal(all.summaries[1].learned, '学到 X');
+
+  const p = JSON.parse((await req('GET','/api/session-summaries?project=/p')).body);
+  assert.equal(p.total, 1, '项目过滤应只返回该项目');
+  assert.equal(p.summaries[0].session_id, 's1');
+  assert.equal(p.summaries[0].completed, '完成 Y');
+
+  const q = JSON.parse((await req('GET','/api/session-summaries?limit=1&offset=1')).body);
+  assert.equal(q.total, 2);
+  assert.equal(q.summaries.length, 1);
+  assert.equal(q.limit, 1);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// 回归: 注入结果里除了 text/hits/error, 还要落阈值与候选数诊断字段,
+// 否则"0 命中"和"阈值高于实际可达相似度"在 UI 上无法区分。
+test('POST /api/recall/semantic records diagnostics on the PROMPT row', async () => { await boot(); try {
+  await req('POST','/api/config', { llm:{ timeoutSeconds: 1 } });  // 缩短 embed 超时, 让测试快速失败
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  const pj = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'hi', type:'PROMPT', claudePromptId:'cp1', projectDir:'/p'
+  })).body);
+  assert.ok(pj.id > 0);
+
+  const r = JSON.parse((await req('POST','/api/recall/semantic', {
+    sessionId:'s1', promptId:'cp1', project:'/p', prompt:'hi'
+  })).body);
+  assert.equal(typeof r.minScore, 'number', '响应应带生效阈值');
+  assert.equal(typeof r.candidates, 'number', '响应应带 KNN 候选数');
+  assert.ok('maxSim' in r, '响应应带最高 sim');
+
+  // 落库内容与响应一致 —— UI 只读落库内容
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body);
+  assert.ok(rows.prompts[0].injected_context, 'injected_context 应已写回 PROMPT 行');
+  const stored = JSON.parse(rows.prompts[0].injected_context);
+  assert.equal(stored.minScore, r.minScore);
+  assert.equal(stored.candidates, r.candidates);
+  assert.equal(stored.maxSim, r.maxSim);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// 回归: claude 的 prompt_id 在同一 session 内会重复(实测 <task-notification> 与真实用户 prompt
+// 共用同一个 id)。按 claude_prompt_id 匹配会把一次注入覆盖到多条历史行, 最早的记录被静默丢弃。
+test('injection targets the exact row via rowId instead of a claude_prompt_id sibling', async () => { await boot(); try {
+  await req('POST','/api/config', { llm:{ timeoutSeconds: 1 } });
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  const a = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'真实 prompt', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  })).body);
+  const b = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'<task-notification>...', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  })).body);
+  assert.notEqual(a.id, b.id, '两条同 claude_prompt_id 的行应各有一条记录');
+
+  const r = JSON.parse((await req('POST','/api/recall/semantic', {
+    sessionId:'s1', rowId: a.id, promptId:'dup1', project:'/p', prompt:'真实 prompt'
+  })).body);
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body);
+  const rowA = rows.prompts.find(p => p.id === a.id);
+  const rowB = rows.prompts.find(p => p.id === b.id);
+
+  assert.ok(rowA.injected_context, 'rowId 指向的行应写入注入记录');
+  assert.deepEqual(JSON.parse(rowA.injected_context), r, '落库内容应与响应一致');
+  assert.equal(rowB.injected_context, null,
+    '同 claude_prompt_id 的兄弟行不应被覆盖, 实际 ' + rowB.injected_context);
+
+  // rowId 缺省时退回旧匹配逻辑, 保持向后兼容
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'第三条', type:'PROMPT', claudePromptId:'dup2', projectDir:'/p' });
+  await req('POST','/api/recall/semantic', { sessionId:'s1', promptId:'dup2', project:'/p', prompt:'第三条' });
+  const rows2 = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body);
+  assert.ok(rows2.prompts.find(p => p.claude_prompt_id === 'dup2').injected_context,
+    '未传 rowId 时应仍能按 claude_prompt_id 写回');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
