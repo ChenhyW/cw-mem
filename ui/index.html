@@ -120,6 +120,10 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .probe-tag { font-size:10px; font-weight:700; padding:1px 7px; border-radius:5px; background:var(--accent-soft); color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; }
 .probe-skipped { font-size:11px; color:var(--text-muted); }
 .probe-title { font-size:13px; font-weight:600; color:var(--text); line-height:1.5; word-break:break-word; }
+/* 标题提到顶部占分数原位置: 单行 + 省略号, 保证 mark/tag 不会被长标题挤换行; 全文走 title 属性 */
+.probe-title-inline { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 分数沉到底部 meta 行, 右对齐当结果读数, 参考带着色不变 */
+.probe-meta .probe-cos { margin-left:auto; }
 .probe-sub { font-size:12px; color:var(--text-muted); margin-top:2px; line-height:1.5; word-break:break-word; }
 .probe-bar { height:4px; background:var(--surface-alt); border-radius:2px; margin-top:8px; overflow:hidden; }
 .probe-bar i { display:block; height:100%; border-radius:2px; background:var(--accent); }
@@ -791,20 +795,22 @@ function probeItem(h) {
   const pass = !!h.pass;
   const c = Number(h.cosine) || 0;
   const band = cosBand(c);
+  const titleText = h.title || ('#' + h.ref_id);
+  // 分数是"结果", 沉到底部 meta 行右端; 标题提到顶部原来放分数的位置, 单行省略号, 全文走 hover
+  const cos = '<span class="probe-cos cos-' + band + '" title="' + esc(cosBandTitle(band)) + '">' + c.toFixed(3) + '</span>';
   return '<div class="probe-item ' + (pass ? 'pass' : 'fail') + '">'
     + '<div class="probe-top">'
       + '<span class="probe-rank">' + esc(h.rank) + '</span>'
-      + '<span class="probe-cos cos-' + band + '" title="' + esc(cosBandTitle(band)) + '">' + c.toFixed(3) + '</span>'
+      + '<span class="probe-title probe-title-inline" title="' + esc(titleText) + '">' + esc(titleText) + '</span>'
       + '<span class="probe-mark ' + (pass ? 'pass' : 'fail') + '">' + (pass ? '✓' : '✗') + '</span>'
       + '<span class="probe-tag">' + esc(h.entity_type || '?') + '</span>'
       + (pass ? '' : '<span class="probe-skipped">不会被注入</span>')
     + '</div>'
-    + '<div class="probe-title">' + esc(h.title || '#' + h.ref_id) + '</div>'
     + (h.subtitle ? '<div class="probe-sub">' + esc(trunc(h.subtitle, 180)) + '</div>' : '')
     + '<div class="probe-bar" title="余弦在 [0, 1] 上的位置, 刻度与参考带一致">'
       + '<i class="' + (pass ? '' : 'fail') + '" style="width:' + probePct(c) + '%"></i></div>'
     + '<div class="probe-meta">' + esc(h.entity_type || '?') + ' #' + esc(h.ref_id)
-      + (files ? ' · ' + files : '') + '</div>'
+      + (files ? ' · ' + files : '') + cos + '</div>'
   + '</div>';
 }
 
