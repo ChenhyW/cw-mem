@@ -348,3 +348,72 @@ test('injection targets the exact row via rowId instead of a claude_prompt_id si
   assert.ok(rows2.prompts.find(p => p.claude_prompt_id === 'dup2').injected_context,
     '未传 rowId 时应仍能按 claude_prompt_id 写回');
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// claude 的 prompt_id 在同 session 内会重复(<task-notification> 与真实 prompt 共用),
+// 而 Stop hook 拿不到 prompts 主键 —— 服务端必须自己把"这一轮回复"定位到唯一一行。
+// 真实库实测: 7 组重复 id, 后写的 task-notification 回复覆盖掉 4 小时前真实 prompt 的回复,
+// 并使每个兄弟行各跑一次 result 摘要(recover 按 response 非空重建待办)。
+test('response writes to exactly one sibling row, not all rows sharing claude_prompt_id', async () => { await boot(); try {
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  const a = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'真实 prompt', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  })).body);
+  const b = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'<task-notification>...', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  })).body);
+  const getRows = async () => JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+
+  const r1 = JSON.parse((await req('POST','/api/prompts/response', {
+    promptId:'dup1', sessionId:'s1', response:'第一轮回复'
+  })).body);
+  assert.equal(r1.changes, 1, '同 claude_prompt_id 只应命中一行, 实际 ' + r1.changes);
+
+  let rows = await getRows();
+  assert.equal((rows.find(p => p.id === b.id).response) || '', '第一轮回复', '最新未回复行应收到回复');
+  assert.equal((rows.find(p => p.id === a.id).response) || '', '', '更早的兄弟行不应被覆盖');
+
+  // 第二轮: 新兄弟行出现后回复应落到新行, 前一轮的回复保持原样
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'<task-notification> 第二条', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  });
+  const r2 = JSON.parse((await req('POST','/api/prompts/response', {
+    promptId:'dup1', sessionId:'s1', response:'第二轮回复'
+  })).body);
+  assert.equal(r2.changes, 1, '第二轮同样只命中一行, 实际 ' + r2.changes);
+
+  rows = await getRows();
+  const c = rows.filter(p => p.claude_prompt_id === 'dup1').sort((x, y) => y.id - x.id)[0];
+  assert.equal((rows.find(p => p.id === c.id).response) || '', '第二轮回复', '最新未回复行应收到第二轮回复');
+  assert.equal((rows.find(p => p.id === b.id).response) || '', '第一轮回复', '上一轮回复不应被后写的覆盖');
+  assert.equal((rows.find(p => p.id === a.id).response) || '', '', '最早兄弟行全程不应被写入');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('summarize targets the same row the response just landed on', async () => { await boot(); try {
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  const a = JSON.parse((await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'真实 prompt', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  })).body);
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'<task-notification>...', type:'PROMPT', claudePromptId:'dup1', projectDir:'/p'
+  });
+
+  const rj = JSON.parse((await req('POST','/api/prompts/response', {
+    promptId:'dup1', sessionId:'s1', response:'回复正文'
+  })).body);
+  assert.equal(rj.changes, 1, '前提: 回复只落一行');
+
+  // 旧实现按 claude_prompt_id 取首行(最小 id), 会摘要更早那条; 修复后须与回复落库的行一致
+  const s = JSON.parse((await req('POST','/api/prompts/summarize', {
+    promptId:'dup1', sessionId:'s1'
+  })).body);
+  assert.equal(s.status, 'ok');
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  assert.equal((rows.find(p => p.id === s.id).response) || '', '回复正文', '摘要目标应是刚写入回复的那一行');
+  assert.notEqual(s.id, a.id, '不应回退到更早的兄弟行 ' + a.id + ', 实际 ' + s.id);
+
+  // 重复请求: 要么直接跳过, 要么重试同一行 —— 绝不换个兄弟行入队
+  const again = JSON.parse((await req('POST','/api/prompts/summarize', {
+    promptId:'dup1', sessionId:'s1'
+  })).body);
+  if (again.status === 'ok') assert.equal(again.id, s.id, '重试应落在同一行, 实际 ' + again.id + ' vs ' + s.id);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
