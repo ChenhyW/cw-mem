@@ -86,6 +86,47 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .vt { background:var(--surface); border:1px solid var(--border); color:var(--text-muted); padding:6px 16px; border-radius:7px; cursor:pointer; font-size:13px; }
 .vt.active { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600; }
 .session-card .summary-label { background:var(--surface-alt); }
+/* 注入测试: 挑 minCosine 的探查面板。只读 KNN, 阈值线直接画在结果列表里 */
+.probe-form { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:12px; }
+.probe-label { font-size:11px; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+.probe-prompt { width:100%; resize:vertical; background:var(--surface-alt); border:1px solid var(--border); color:var(--text); font:inherit; font-size:13px; padding:10px 12px; border-radius:8px; min-height:66px; }
+.probe-prompt:focus { outline:none; border-color:var(--accent); }
+.probe-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.probe-count { width:72px; background:var(--surface-alt); border:1px solid var(--border); color:var(--text); font:inherit; font-size:13px; padding:8px 10px; border-radius:8px; }
+.probe-count:focus { outline:none; border-color:var(--accent); }
+.probe-run { background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); padding:7px 22px; border-radius:7px; cursor:pointer; font-size:13px; font-weight:600; }
+.probe-run:hover { background:var(--accent); color:#fff; }
+.probe-run:disabled { opacity:0.5; cursor:default; }
+.probe-hint { font-size:12px; color:var(--text-muted); }
+.probe-diag { font-size:12px; color:var(--text-muted); margin:16px 0 10px; padding:8px 12px; background:var(--surface-alt); border:1px solid var(--border); border-radius:8px; display:flex; flex-wrap:wrap; gap:4px 16px; }
+.probe-diag b { color:var(--text); font-weight:600; }
+.probe-empty { text-align:center; padding:40px 20px; color:var(--text-muted); font-size:13px; }
+.probe-list { display:flex; flex-direction:column; gap:10px; }
+.probe-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; box-shadow:var(--shadow); }
+.probe-item.pass { border-left:3px solid #3fb950; }
+.probe-item.fail { border-left:3px solid var(--text-muted); opacity:0.78; }
+.probe-top { display:flex; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap; }
+.probe-rank { font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums; min-width:16px; }
+.probe-cos { font-size:15px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; }
+/* 余弦参考带: 分数本身按带着色, 不用读说明就能看出高相关/弱相关/不相关 */
+.probe-cos.cos-high { color:#3fb950; }
+.probe-cos.cos-mid { color:#d29922; }
+.probe-cos.cos-low { color:var(--text-muted); }
+.probe-bands { font-size:11px; color:var(--text-muted); margin:0 0 12px; }
+.probe-bands b { color:var(--text); font-weight:600; }
+.probe-mark { font-size:12px; font-weight:700; }
+.probe-mark.pass { color:#3fb950; }
+.probe-mark.fail { color:var(--text-muted); }
+.probe-tag { font-size:10px; font-weight:700; padding:1px 7px; border-radius:5px; background:var(--accent-soft); color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; }
+.probe-skipped { font-size:11px; color:var(--text-muted); }
+.probe-title { font-size:13px; font-weight:600; color:var(--text); line-height:1.5; word-break:break-word; }
+.probe-sub { font-size:12px; color:var(--text-muted); margin-top:2px; line-height:1.5; word-break:break-word; }
+.probe-bar { height:4px; background:var(--surface-alt); border-radius:2px; margin-top:8px; overflow:hidden; }
+.probe-bar i { display:block; height:100%; border-radius:2px; background:var(--accent); }
+.probe-bar i.fail { background:var(--text-muted); }
+.probe-meta { font-size:11px; color:var(--text-muted); margin-top:6px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.probe-divide { display:flex; align-items:center; gap:10px; margin:4px 0; font-size:11px; color:var(--text-muted); }
+.probe-divide span { flex:1; height:1px; background:var(--border); }
 .status-pill { font-size:11px; padding:2px 7px; border-radius:4px; }
 .status-pending { background:rgba(187,128,9,0.18); color:#d29922; }
 .status-success { background:rgba(46,160,67,0.18); color:#3fb950; }
@@ -172,6 +213,7 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
   <div class="view-tabs">
     <button class="vt active" id="vtPrompts" data-view="prompts" onclick="switchView('prompts')">提示词记录</button>
     <button class="vt" id="vtSessions" data-view="sessions" onclick="switchView('sessions')">会话摘要</button>
+    <button class="vt" id="vtProbe" data-view="probe" onclick="switchView('probe')">注入测试</button>
   </div>
   <div id="promptView">
     <div id="loading" class="loading"><div class="spinner"></div><div>加载中...</div></div>
@@ -188,6 +230,24 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
       <p>会话结束时才生成摘要; 目前没有已结束且非空的会话。</p>
     </div>
     <div id="sessionList" class="prompt-list"></div>
+  </div>
+  <div id="probeView" style="display:none">
+    <div class="probe-form">
+      <div>
+        <div class="probe-label">提示词</div>
+        <textarea id="probePrompt" class="probe-prompt" rows="3" placeholder="输入一段提示词, 看它会召回哪些记忆、各自分数多少"
+          onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();runProbe();}"></textarea>
+      </div>
+      <div class="probe-actions">
+        <div>
+          <div class="probe-label">条数</div>
+          <input type="number" id="probeCount" class="probe-count" min="1" max="20" value="5">
+        </div>
+        <button class="probe-run" id="probeRun" onclick="runProbe()">测试</button>
+        <span class="probe-hint">项目跟随页头下拉 · ⌘/Ctrl+Enter 运行</span>
+      </div>
+    </div>
+    <div id="probeResult"></div>
   </div>
 </div>
 
@@ -327,9 +387,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
             <div class="field-input"><input type="number" id="sTopK" min="1" max="1000"></div>
           </div>
           <div class="field">
-            <label>minScore(注入阈值) <span class="reboot-tag reboot-no">即时生效</span></label>
-            <div class="field-input"><input type="number" id="sMinScore" min="0" max="1" step="0.01"></div>
-            <div class="help">sim = 1/(1+L2), 归一化向量下取值 [0.414, 1.0]: 0.5≈余弦0.50, 0.6≈0.78, 0.7≈0.91(很严, 小模型通常达不到)。低于 0.414 等于不过滤; 高于语料实际可达值则永远 0 命中。建议 0.5～0.6。每张 PROMPT 卡的注入块会显示本次阈值/候选数/最高 sim, 可直接对照调参</div>
+            <label>minCosine(注入阈值 · 余弦相似度) <span class="reboot-tag reboot-no">即时生效</span></label>
+            <div class="field-input"><input type="number" id="sMinCosine" min="0" max="1" step="0.01"></div>
+            <div class="help">通常 0.7 以上为高相关, 0.5~0.7 为弱相关, 0.5 以下为不相关。阈值高于语料实际可达值则永远 0 命中。每张 PROMPT 卡的注入块会显示本次阈值/候选数/最高余弦; 「注入测试」页可用任意提示词查未过滤的排序分数, 直接看哪几条差一点被挡</div>
           </div>
           <div class="field">
             <label>SessionStart 注入条数 <span class="reboot-tag reboot-no">即时生效</span></label>
@@ -515,15 +575,25 @@ function renderInjected(p) {
   if (inj.text) html += '<div class="inj-text">' + esc(trunc(inj.text, 800)) + '</div>';
   if (inj.error) html += '<div class="inj-error">' + esc(trunc(inj.error, 200)) + '</div>';
   if (inj.hits && inj.hits.length) {
-    const hits = inj.hits.map(h => '<div class="inj-hit">• ' + esc(h.title || '#' + h.ref_id) + '<span class="score">score ' + (h.score || 0).toFixed(3) + '</span></div>').join('');
+    // 新记录存 cosine; 旧记录只有 score(1/(1+L2) 口径) —— 回退显示并标注, 两把尺子不能混读
+    const hits = inj.hits.map(h => {
+      const isNew = h.cosine != null;
+      const v = isNew ? Number(h.cosine) : Number(h.score || 0);
+      return '<div class="inj-hit">• ' + esc(h.title || '#' + h.ref_id)
+        + '<span class="score">' + (isNew ? 'cosine' : 'sim(旧)') + ' ' + v.toFixed(3) + '</span></div>';
+    }).join('');
     html += '<div class="inj-hits">' + hits + '</div>';
   }
-  // 诊断行: 阈值高于语料实际可达 sim 时会 0 命中且无 error, 只有这行能指出原因。
-  // 旧数据没有这些字段 → 显示 '—', 不报错。
-  if (inj.minScore != null) {
-    html += '<div class="inj-diag">阈值 ' + Number(inj.minScore).toFixed(2)
+  // 诊断行: 阈值高于语料实际可达余弦时会 0 命中且无 error, 只有这行能指出原因。
+  // minCosine 缺失 = 旧口径记录(minScore/maxSim), 尺度不同, 分开标以免误读。
+  if (inj.minCosine != null) {
+    html += '<div class="inj-diag">阈值 cos ' + Number(inj.minCosine).toFixed(2)
       + ' · 候选 ' + (inj.candidates != null ? inj.candidates : '—')
-      + ' · 最高 sim ' + (inj.maxSim != null ? Number(inj.maxSim).toFixed(3) : '—') + '</div>';
+      + ' · 最高 cos ' + (inj.maxCosine != null ? Number(inj.maxCosine).toFixed(3) : '—') + '</div>';
+  } else if (inj.minScore != null) {
+    html += '<div class="inj-diag">阈值 ' + Number(inj.minScore).toFixed(2) + '(旧口径)'
+      + ' · 候选 ' + (inj.candidates != null ? inj.candidates : '—')
+      + ' · 最高 ' + (inj.maxSim != null ? Number(inj.maxSim).toFixed(3) : '—') + '</div>';
   }
   return html + '</div>';
 }
@@ -645,6 +715,8 @@ function changeProject() {
   currentProject = document.getElementById('projectSelect').value;
   loadPrompts(false);
   if (sessionViewVisible()) loadSessionSummaries();
+  // 探查结果属于切换前的项目, 留着会误读 —— 直接清掉
+  document.getElementById('probeResult').innerHTML = '';
 }
 function loadMore() { loadPrompts(true); }
 
@@ -660,10 +732,112 @@ function switchView(view) {
   document.querySelectorAll('.vt').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.getElementById('promptView').style.display = view === 'prompts' ? '' : 'none';
   document.getElementById('sessionView').style.display = view === 'sessions' ? '' : 'none';
+  document.getElementById('probeView').style.display = view === 'probe' ? '' : 'none';
   // 切回时重载, 否则要等下一个轮询周期才拿到新数据
   if (view === 'sessions') loadSessionSummaries();
-  else loadPrompts(false);
+  else if (view !== 'probe') loadPrompts(false);
+  if (view === 'probe') document.getElementById('probePrompt').focus();
 }
+
+// ─── 注入测试 ───
+// 挑 recall.minCosine 用: /api/recall/test 走同一套向量化 + KNN, 但**不套阈值**,
+// 所以能看见"差一点就被注入"的条目。只读, 不写任何记录。
+// 分数与阈值都是余弦(见 lib/vector.js 的 cosineFromDistance), 直接画条,
+// 不需要像旧 sim = 1/(1+L2) 那样先映射回它的实际取值区间。
+function probeViewVisible() {
+  return document.getElementById('probeView').style.display !== 'none';
+}
+
+// 参考带: ≥0.7 高相关, 0.5~0.7 弱相关, <0.5 不相关
+const COS_HIGH = 0.7, COS_MID = 0.5;
+
+function cosBand(c) {
+  if (c >= COS_HIGH) return 'high';
+  if (c >= COS_MID) return 'mid';
+  return 'low';
+}
+
+function cosBandTitle(band) {
+  return band === 'high' ? '高相关(≥0.7)' : band === 'mid' ? '弱相关(0.5~0.7)' : '不相关(<0.5)';
+}
+
+// 分数条: 余弦在 [0,1] 上直接按比例画, 刻度与参考带一致。
+// 负值(强烈反义)文本上罕见, 一律归"不相关"并按 0 画条。
+function probePct(cosine) {
+  return (Math.max(0, Math.min(1, Number(cosine) || 0)) * 100).toFixed(1);
+}
+
+async function runProbe() {
+  const btn = document.getElementById('probeRun');
+  const box = document.getElementById('probeResult');
+  const prompt = document.getElementById('probePrompt').value.trim();
+  if (!prompt) { box.innerHTML = '<div class="probe-empty">先输入提示词</div>'; return; }
+  const count = Math.max(1, Math.min(20, parseInt(document.getElementById('probeCount').value, 10) || 5));
+  btn.disabled = true;
+  btn.textContent = '测试中…';
+  try {
+    const r = await api('/api/recall/test', 'POST', { project: currentProject, prompt: prompt, count: count });
+    box.innerHTML = renderProbeResult(r);
+  } catch (e) {
+    box.innerHTML = '<div class="probe-empty" style="color:#f85149">请求失败: ' + esc(e.message || e) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '测试';
+  }
+}
+
+function probeItem(h) {
+  const files = (h.files_modified || []).map(f => '<span class="file-chip">' + esc(f) + '</span>').join('');
+  const pass = !!h.pass;
+  const c = Number(h.cosine) || 0;
+  const band = cosBand(c);
+  return '<div class="probe-item ' + (pass ? 'pass' : 'fail') + '">'
+    + '<div class="probe-top">'
+      + '<span class="probe-rank">' + esc(h.rank) + '</span>'
+      + '<span class="probe-cos cos-' + band + '" title="' + esc(cosBandTitle(band)) + '">' + c.toFixed(3) + '</span>'
+      + '<span class="probe-mark ' + (pass ? 'pass' : 'fail') + '">' + (pass ? '✓' : '✗') + '</span>'
+      + '<span class="probe-tag">' + esc(h.entity_type || '?') + '</span>'
+      + (pass ? '' : '<span class="probe-skipped">不会被注入</span>')
+    + '</div>'
+    + '<div class="probe-title">' + esc(h.title || '#' + h.ref_id) + '</div>'
+    + (h.subtitle ? '<div class="probe-sub">' + esc(trunc(h.subtitle, 180)) + '</div>' : '')
+    + '<div class="probe-bar" title="余弦在 [0, 1] 上的位置, 刻度与参考带一致">'
+      + '<i class="' + (pass ? '' : 'fail') + '" style="width:' + probePct(c) + '%"></i></div>'
+    + '<div class="probe-meta">' + esc(h.entity_type || '?') + ' #' + esc(h.ref_id)
+      + (files ? ' · ' + files : '') + '</div>'
+  + '</div>';
+}
+
+function renderProbeResult(r) {
+  const hits = Array.isArray(r.hits) ? r.hits : [];
+  const min = Number(r.minCosine);
+  const hasMin = Number.isFinite(min);
+  const minLabel = hasMin ? min.toFixed(2) : '—';
+  const passed = hits.filter(h => h.pass).length;
+  const head = '<div class="probe-diag">'
+    + '<span>当前阈值 <b>' + minLabel + '</b></span>'
+    + '<span>候选 <b>' + (r.candidates != null ? r.candidates : '—') + '</b></span>'
+    + '<span>最高余弦 <b>' + (hits.length ? Number(hits[0].cosine).toFixed(3) : '—') + '</b></span>'
+    + '<span>通过 <b>' + passed + '</b> / ' + hits.length + '</span>'
+    + (r.elapsedMs != null ? '<span>' + r.elapsedMs + ' ms</span>' : '')
+  + '</div>'
+  + '<div class="probe-bands">参考带: <b>≥0.7</b> 高相关 · <b>0.5~0.7</b> 弱相关 · <b>&lt;0.5</b> 不相关</div>';
+
+  if (r.error) return head + '<div class="probe-empty">查询失败: ' + esc(r.error) + '</div>';
+  if (!hits.length) return head + '<div class="probe-empty">没有召回到记忆。候选为 0 说明该项目还没有已向量化且非 skip 的记忆。</div>';
+
+  // 阈值线画在最后一条 pass 与第一条 fail 之间; 全部通过时不画(没有边界)
+  const split = hits.findIndex(h => !h.pass);
+  let html = head + '<div class="probe-list">';
+  hits.forEach((h, i) => {
+    if (split >= 0 && i === split) {
+      html += '<div class="probe-divide"><span></span>当前 minCosine ' + minLabel + ' 以下不会被注入<span></span></div>';
+    }
+    html += probeItem(h);
+  });
+  return html + '</div>';
+}
+
 
 // 会话摘要卡: 项目名 · 时间 · 6 个结构化字段(与 PROMPT 卡的结果摘要共用 summaryRow)
 function sessionCard(s) {
@@ -731,6 +905,7 @@ async function refreshList() {
   if (document.getElementById('settingsMask').classList.contains('show')) return;
   // 轮询只刷新当前可见的视图, 避免为一个看不见的视图发请求
   if (sessionViewVisible()) { loadSessionSummaries(); return; }
+  if (probeViewVisible()) return;  // 探查视图不需要提示词列表, 别每 5s 白拉一次
   const limit = Math.max(offset, LIMIT);
   const params = new URLSearchParams({ limit, offset: 0 });
   if (currentProject) params.set('project', currentProject);
@@ -784,7 +959,7 @@ function renderSettingsForm(cfg) {
   document.getElementById('sSweepIntervalSeconds').value = cfg.queue.sweepIntervalSeconds;
   document.getElementById('sQueueSpool').checked = cfg.queue.spool.enabled;
   document.getElementById('sTopK').value = cfg.recall.topK;
-  document.getElementById('sMinScore').value = cfg.recall.minScore;
+  document.getElementById('sMinCosine').value = cfg.recall.minCosine;
   document.getElementById('sSessionStartCount').value = cfg.recall.sessionStartCount;
   document.getElementById('sInjectMaxCount').value = cfg.recall.injectMaxCount;
   document.getElementById('sInjectMaxTokens').value = cfg.recall.injectMaxTokens;
@@ -826,7 +1001,7 @@ function buildPayload() {
     },
     recall: {
       topK: parseInt(document.getElementById('sTopK').value, 10),
-      minScore: parseFloat(document.getElementById('sMinScore').value),
+      minCosine: parseFloat(document.getElementById('sMinCosine').value),
       sessionStartCount: parseInt(document.getElementById('sSessionStartCount').value, 10),
       injectMaxCount: parseInt(document.getElementById('sInjectMaxCount').value, 10),
       injectMaxTokens: parseInt(document.getElementById('sInjectMaxTokens').value, 10)

@@ -1,6 +1,8 @@
 # cw-mem 内存队列 + 流式工具聚合 实现计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **⚠️ 修订记录(2026-09-11):测试夹具里的 `recall.minScore` 已改为 `minCosine`(相似度口径换成余弦)。其余为 2026-09-07 原始计划。**
 
 **Goal:** 用进程内内存队列替代"hook 同步写 + server 直接跑摘要 + 三个轮询补齐"，实现按 `(tool_name, file_path)` 复合键的流式工具聚合，删除周期 sweep、保留行级重试状态机。
 
@@ -281,7 +283,7 @@ const baseCfg = {
   llm: { enabled: true, apiKey: 'sk-x', model: 'm', apiBase: 'http://x', timeoutSeconds: 5, maxRetries: 3, retryIntervalSeconds: 1 },
   ollama: { url: 'http://x', embedModel: 'm', embedDim: 4 },
   toolSummary: { enabled: true, skipMode: 'on', payloadMaxBytes: 524288 },
-  recall: { topK: 5, minScore: 0.0, injectMaxCount: 8, injectMaxTokens: 800 },
+  recall: { topK: 5, minCosine: 0, injectMaxCount: 8, injectMaxTokens: 800 },
   queue: { pollMs: 50, quiescenceSeconds: 0.05, toolGroupMax: 6, sweepIntervalSeconds: 60, spool: { enabled: false } }
 };
 ```

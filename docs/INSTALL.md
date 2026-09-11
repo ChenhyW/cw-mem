@@ -48,7 +48,7 @@ npm rebuild better-sqlite3 sqlite-vec   # 目录已存在 node_modules 时必须
 - **LLM 与向量化**:
   - 开启摘要生成;填 provider / API Base / 模型 / API Key
   - ollama URL / 嵌入模型(`nomic-embed-text`)/ 嵌入维度(768)。改这三项需"保存并重启"
-- **记忆与召回**:工具调用摘要开关(默认关,省 token)、skip 模式、topK / minScore / SessionStart 注入条数 / UserPrompt 注入最多条数 / 注入最大字符数
+- **记忆与召回**:工具调用摘要开关(默认关,省 token)、skip 模式、topK / minCosine(注入余弦阈值) / SessionStart 注入条数 / UserPrompt 注入最多条数 / 注入最大字符数
 
 点「保存」即时生效;改了"需重启"项点「保存并重启」。
 

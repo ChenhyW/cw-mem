@@ -40,7 +40,7 @@ const baseCfg = {
   llm: { enabled: true, apiKey: 'sk-x', model: 'm', apiBase: 'http://x', timeoutSeconds: 5, maxRetries: 3, retryIntervalSeconds: 1, summaryFieldLimit: 2000 },
   ollama: { url: 'http://x', embedModel: 'm', embedDim: 4 },
   toolSummary: { enabled: true, skipMode: 'on', payloadMaxBytes: 524288 },
-  recall: { topK: 5, minScore: 0.0, injectMaxCount: 8, injectMaxTokens: 800 },
+  recall: { topK: 5, minCosine: 0, injectMaxCount: 8, injectMaxTokens: 800 },
   queue: { pollMs: 50, quiescenceSeconds: 0.05, toolGroupMax: 6, sweepIntervalSeconds: 60, spool: { enabled: false } }
 };
 

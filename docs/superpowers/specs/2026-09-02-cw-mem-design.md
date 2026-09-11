@@ -3,6 +3,8 @@
 > 日期:2026-09-02 · 状态:Spec(待实现) · 插件占位名 `cw-mem` / 仓库占位 `<repo-url>`
 >
 > 设计原则:所有结论用事实验证(见"已验证事实基线"),不猜测;遵循 YAGNI;闭环(记录→召回→注入)永不断。
+>
+> **⚠️ 修订记录(2026-09-11):相似度口径已从 `sim = 1/(1+L2)` 改为余弦 `cos = 1 - d²/2`,配置键 `minScore` → `minCosine`(默认 0.5)。本文件中的键名与数值已同步更新,但其余设计内容为 2026-09-02 的原始方案,未回溯改写。**
 
 ## 1. Context(为什么做)
 
@@ -112,7 +114,7 @@ memories_meta(rowid INT, entity_type TEXT,        -- tool | result | session
 | Hook | 行为 | 可配置 |
 |---|---|---|
 | SessionStart | ① 启 server(lazy);② 注入该 project 最近 N 条会话摘要(`additionalContext`, hookEventName=`SessionStart`)。N=`recall.sessionStartCount` | 数值旋钮;**注入本身必开** |
-| UserPromptSubmit | ① 记录提示词(PROMPT 行,`prompt`/`prompt_id`);② 语义召回:ollama embed(prompt)→ sqlite-vec KNN → 过滤(project+minScore+type≠skip)→ 写 `injected_context` 到该行 → `additionalContext`(hookEventName=`UserPromptSubmit`) | 数值旋钮;**注入本身必开** |
+| UserPromptSubmit | ① 记录提示词(PROMPT 行,`prompt`/`prompt_id`);② 语义召回:ollama embed(prompt)→ sqlite-vec KNN → 过滤(project+minCosine+type≠skip)→ 写 `injected_context` 到该行 → `additionalContext`(hookEventName=`UserPromptSubmit`) | 数值旋钮;**注入本身必开** |
 | PostToolUse | 廉价记录原始 input/output 到 `tool_details`(不调 LLM) | 受 `toolSummary.enabled` 总开关:关则不记(且 UI 不展示工具卡) |
 | Stop | ① 写回 `response`(按 claude_prompt_id);② **必生成**结果摘要:喂料=用户提示词+最终回复+(若开启)本轮工具观察 → LLM(6 字段 summary 结构)→ embed → 存向量;③ 若工具摘要开:批量生成工具 observation(含跨调用 skip/合并)→ embed → 存向量 | 结果摘要**必开**;工具 observation 受 `toolSummary.enabled` |
 | SessionEnd | **必生成**会话摘要:喂料=全会话 result 摘要+(若开启)工具观察 → LLM → embed → 存向量 | **必开** |
@@ -159,7 +161,7 @@ system 引导抄 claude-mem 的 `recording_focus`(GOOD/BAD 示例 + 动词清单
 
 ### 读侧
 
-- **UserPromptSubmit(语义)**:prompt → ollama embed → `SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? ORDER BY distance LIMIT <topK>` → JS 后过滤(同 project + `minScore` + type≠skip + 去重)→ 取命中 `subtitle`+`files_modified` 拼注入文本 → 按 `injectMaxTokens` 裁剪、`injectMaxCount` 限条数 → `additionalContext`。
+- **UserPromptSubmit(语义)**:prompt → ollama embed → `SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? ORDER BY distance LIMIT <topK>` → JS 后过滤(同 project + `minCosine` + type≠skip + 去重)→ 取命中 `subtitle`+`files_modified` 拼注入文本 → 按 `injectMaxTokens` 裁剪、`injectMaxCount` 限条数 → `additionalContext`。
 - **文件级召回(hybrid)**:先 `memories_meta` 按 `files_modified LIKE '%<file>%'` 取 rowid 集 → 再对该集做向量 KNN 排序(SQL 元数据过滤 ∩ 向量相似度)。
 - **SessionStart(时间近邻,非语义)**:该 project 最近 N 条 `session_summaries`(按 `created_at` desc,`sessionStartCount` 条)→ 注入其 `request`+`learned`+`next_steps`。非语义因会话刚开无查询词。
 
@@ -178,7 +180,7 @@ UserPromptSubmit 召回命中写入该 prompt 行 `injected_context`(JSON:`[{ent
               "maxRetries": 3, "retryIntervalSeconds": 60, "timeoutSeconds": 30, "summaryFieldLimit": 2000 },
   "ollama": { "url": "http://localhost:11434", "embedModel": "nomic-embed-text", "embedDim": 768, "timeoutSeconds": 30 },
   "toolSummary": { "enabled": false, "skipMode": "on" },
-  "recall": { "topK": 20, "minScore": 0.30, "injectMaxCount": 5, "injectMaxTokens": 800, "sessionStartCount": 3 }
+  "recall": { "topK": 20, "minCosine": 0.5, "injectMaxCount": 5, "injectMaxTokens": 800, "sessionStartCount": 3 }
 }
 ```
 
@@ -211,7 +213,7 @@ UI 分区:
 2. ollama:`curl -X POST localhost:11434/api/embed -d '{"model":"nomic-embed-text","input":"test"}'` 实测。
 3. sqlite-vec:最小用例(加载扩展→建 vec0 表→插 1 条→`embedding MATCH` KNN)验证语法,再铺开。
 4. 注入生效:SessionStart/UserPromptSubmit hook 把本次 `additionalContext` 写一份到日志,人工确认 Claude 读取了注入内容(或用依赖注入记忆的问答验证)。
-5. 召回:构造 2 条向量 + 1 条 query,确认 KNN 命中、minScore 过滤、type≠skip 过滤生效。
+5. 召回:构造 2 条向量 + 1 条 query,确认 KNN 命中、minCosine 过滤、type≠skip 过滤生效。
 6. 跳过:构造"空输出/纯读取无后续"工具调用,确认 Stop 批量标 `type=skip` 且不进 `/api/memories` 召回。
 7. UI 一一对应:工具卡显示"↳ 归属提示词 #X";结果摘要在该提示词卡内;会话摘要在会话头;注入命中的 prompt 卡显示「注入的记忆」。
 

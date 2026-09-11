@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { DEFAULT_CONFIG } = require('../lib/config');
 
 let serverHandle, port, dir;
 async function boot() {
@@ -103,7 +104,8 @@ test('GET /api/queue reports queue depth and open groups', async () => { await b
 test('POST /api/config accepts queue section and payloadMaxBytes', async () => { await boot(); try {
   const r = JSON.parse((await req('POST','/api/config', {
     queue:{ pollMs:100, quiescenceSeconds:60, toolGroupMax:3, sweepIntervalSeconds:120, spool:{ enabled:true } },
-    toolSummary:{ payloadMaxBytes: 1048576 }
+    toolSummary:{ payloadMaxBytes: 1048576 },
+    recall:{ minCosine: 0.72 }
   })).body);
   assert.equal(r.status,'ok');
   assert.equal(r.config.queue.pollMs, 100);
@@ -112,10 +114,14 @@ test('POST /api/config accepts queue section and payloadMaxBytes', async () => {
   assert.equal(r.config.queue.sweepIntervalSeconds, 120);
   assert.equal(r.config.queue.spool.enabled, true);
   assert.equal(r.config.toolSummary.payloadMaxBytes, 1048576);
+  // 余弦阈值即时生效: 设置面板存的就是这个键, 改名后若这里不认, 调参会静默失效
+  assert.equal(r.config.recall.minCosine, 0.72);
+  assert.equal(r.config.recall.minScore, undefined);
   // 落盘后可读回
   const onDisk = JSON.parse(fs.readFileSync(path.join(dir,'config.json'),'utf8'));
   assert.equal(onDisk.queue.toolGroupMax, 3);
   assert.equal(onDisk.toolSummary.payloadMaxBytes, 1048576);
+  assert.equal(onDisk.recall.minCosine, 0.72);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
 
 test('server drains a spool written while it was down', async () => {
@@ -208,6 +214,51 @@ test('tool I/O is truncated to toolSummary.payloadMaxBytes', async () => { await
     '落库 input 应被截断到上限附近, 实际 ' + Buffer.byteLength(JSON.stringify(stored.input)));
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
 
+// 回归: 运行中保存曾只判 typeof, 越界值被照单全收并落盘 —— 期间 injectMaxCount=-3 让
+// `hits.length >= -3` 恒真, 注入永远 0 命中; 脏值要等下次重启才被 loadConfig 夹回默认值。
+test('POST /api/config rejects out-of-range values and never persists them', async () => { await boot(); try {
+  const bad = JSON.parse((await req('POST','/api/config', {
+    recall:{ topK:9999, minCosine:-1, injectMaxCount:-3, injectMaxTokens:9 },
+    queue:{ pollMs:5, toolGroupMax:0 },
+    log:{ retentionDays:9999, maxPreviewChars:2, level:'verbose' },
+    server:{ port:99999 }
+  })).body);
+  assert.equal(bad.status, 'ok', '忽略非法值不等于报错');
+  // 全新数据目录无 config.json, 期望值就是默认值
+  assert.equal(bad.config.recall.topK, DEFAULT_CONFIG.recall.topK);
+  assert.equal(bad.config.recall.minCosine, DEFAULT_CONFIG.recall.minCosine);
+  assert.equal(bad.config.recall.injectMaxCount, DEFAULT_CONFIG.recall.injectMaxCount, '负数条数不能写进去, 否则注入恒为 0 命中');
+  assert.equal(bad.config.recall.injectMaxTokens, DEFAULT_CONFIG.recall.injectMaxTokens);
+  assert.equal(bad.config.queue.pollMs, DEFAULT_CONFIG.queue.pollMs);
+  assert.equal(bad.config.queue.toolGroupMax, DEFAULT_CONFIG.queue.toolGroupMax);
+  assert.equal(bad.config.log.retentionDays, DEFAULT_CONFIG.log.retentionDays);
+  assert.equal(bad.config.log.maxPreviewChars, DEFAULT_CONFIG.log.maxPreviewChars);
+  assert.equal(bad.config.log.level, DEFAULT_CONFIG.log.level, '非法 log level 也要被忽略');
+  assert.equal(bad.config.server.port, DEFAULT_CONFIG.server.port);
+  // 关键: 磁盘上也不能留脏值, 否则重启前后行为不一致
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dir,'config.json'),'utf8'));
+  assert.equal(onDisk.recall.topK, DEFAULT_CONFIG.recall.topK);
+  assert.equal(onDisk.recall.minCosine, DEFAULT_CONFIG.recall.minCosine);
+  assert.equal(onDisk.recall.injectMaxCount, DEFAULT_CONFIG.recall.injectMaxCount);
+  assert.equal(onDisk.log.level, 'info');
+  assert.equal(onDisk.server.port, 37889);
+
+  // 合法值仍然生效
+  const good = JSON.parse((await req('POST','/api/config', {
+    recall:{ minCosine:0.72 }, queue:{ pollMs:300 }
+  })).body);
+  assert.equal(good.config.recall.minCosine, 0.72);
+  assert.equal(good.config.queue.pollMs, 300);
+  assert.equal(good.needRestart, false, '非需重启项变更不应报 needRestart');
+
+  // needRestart 按实际差异判断: 改了端口要报, 存同一个值不该再报
+  const moved = JSON.parse((await req('POST','/api/config', { server:{ port:39000 } })).body);
+  assert.equal(moved.config.server.port, 39000);
+  assert.equal(moved.needRestart, true);
+  const same = JSON.parse((await req('POST','/api/config', { server:{ port:39000 } })).body);
+  assert.equal(same.needRestart, false, '存同值不应误报需重启');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
 // 回归: session_summaries 此前只有写入方(batch.js)和注入方(recall.js), 没有任何只读端点,
 // 所以库里已有摘要在 UI 上始终看不见。
 test('GET /api/session-summaries returns summaries with project filter and pagination', async () => { await boot(); try {
@@ -252,17 +303,17 @@ test('POST /api/recall/semantic records diagnostics on the PROMPT row', async ()
   const r = JSON.parse((await req('POST','/api/recall/semantic', {
     sessionId:'s1', promptId:'cp1', project:'/p', prompt:'hi'
   })).body);
-  assert.equal(typeof r.minScore, 'number', '响应应带生效阈值');
+  assert.equal(typeof r.minCosine, 'number', '响应应带生效阈值(余弦)');
   assert.equal(typeof r.candidates, 'number', '响应应带 KNN 候选数');
-  assert.ok('maxSim' in r, '响应应带最高 sim');
+  assert.ok('maxCosine' in r, '响应应带最高余弦');
 
   // 落库内容与响应一致 —— UI 只读落库内容
   const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body);
   assert.ok(rows.prompts[0].injected_context, 'injected_context 应已写回 PROMPT 行');
   const stored = JSON.parse(rows.prompts[0].injected_context);
-  assert.equal(stored.minScore, r.minScore);
+  assert.equal(stored.minCosine, r.minCosine);
   assert.equal(stored.candidates, r.candidates);
-  assert.equal(stored.maxSim, r.maxSim);
+  assert.equal(stored.maxCosine, r.maxCosine);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
 
 // 回归: claude 的 prompt_id 在同一 session 内会重复(实测 <task-notification> 与真实用户 prompt
