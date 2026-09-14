@@ -4,6 +4,8 @@
 #   { session_id, prompt_id, cwd, tool_name, tool_use_id, duration_ms,
 #     tool_input, tool_response{ stdout, stderr, interrupted, isImage, noOutputExpected } }
 #   (无 tool_output / exit_code; 错误靠 tool_response.stderr 判断)
+# 注意: tool_response 的形状**因工具而异**。Bash 类是上面的 stdout/stderr;
+# Read 是 { type, file }, 没有 stdout —— 转发时必须原样带上, 否则内容静默丢失。
 #
 # 行为:
 #   1. 读 config.toolSummary.enabled; 若 false → suppress 退出(不记原始 tool I/O)
@@ -135,18 +137,25 @@ function remember(path, body) {
     claudePromptId: prompt_id,
     filePath: filePath
   };
+  // stdout/stderr 只覆盖 Bash 类工具。Read 的响应是 { type, file }, 没有这两个字段 ——
+  // 只转发它们会让 Read 的文件内容永远丢失, LLM 拿到的全是空载荷(库里 1251 条 Read 摘要
+  // 全部是"内容为空", 根因在此)。带非标准字段时把整个响应附上, 以后新工具形态也不会再静默丢。
+  const stdKeys = ['stdout', 'stderr', 'interrupted', 'isImage', 'noOutputExpected'];
+  const toolOutput = {
+    stdout: resp.stdout || '',
+    stderr: resp.stderr || '',
+    interrupted: resp.interrupted || false,
+    isImage: resp.isImage || false,
+    noOutputExpected: resp.noOutputExpected || false
+  };
+  if (Object.keys(resp).some(k => !stdKeys.includes(k))) toolOutput.raw = resp;
+
   const td = {
     promptId: null,                 // 待 /api/prompts 返回自增 id 后填; spool 场景下可能为空
     sessionId: session_id,
     filePath: filePath,
     toolInput: tool_input || null,
-    toolOutput: {
-      stdout: resp.stdout || '',
-      stderr: resp.stderr || '',
-      interrupted: resp.interrupted || false,
-      isImage: resp.isImage || false,
-      noOutputExpected: resp.noOutputExpected || false
-    },
+    toolOutput,
     toolUseId: tool_use_id,
     toolName: tool_name,
     durationMs: duration_ms

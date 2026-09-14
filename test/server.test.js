@@ -539,3 +539,43 @@ test('TOOL attribution is null when no parent PROMPT row exists', async () => { 
   assert.equal(rows[0].parent_id, null);
   assert.equal(rows[0].parent_seq, null);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// claude 的 prompt_id 在 session 内会重复: 一条真实用户提示词和它之后的多条
+// <task-notification> 共用同一个 id。按 id 取最后一条会把工具调用挂到一条根本不是
+// 用户输入的 task-notification 上。真实库 5e35defa 就是一个 id 对应 1 条真实提示词
+// "开始" + 3 条 task-notification, 02:11-02:15 的工具全被挂到了 02:14 那条上。
+test('TOOL attribution skips task-notification rows sharing the same claude_prompt_id', async () => { await boot(); try {
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'真实提示词', type:'PROMPT', claudePromptId:'cpX', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'<task-notification>\n<task-id>a1>', type:'PROMPT', claudePromptId:'cpX', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'<task-notification>\n<task-id>a2>', type:'PROMPT', claudePromptId:'cpX', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+    claudePromptId:'cpX', projectDir:'/p', filePath:'/a.js'
+  });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  const tool = rows.find(r => r.type === 'TOOL');
+  const real = rows.find(r => r.type === 'PROMPT' && !/^<task-notification>/.test(r.prompt));
+  const tasks = rows.filter(r => r.type === 'PROMPT' && /^<task-notification>/.test(r.prompt));
+  assert.ok(tasks.length >= 2, '测试前提: 有 task-notification 行共享同一 claude_prompt_id');
+  assert.notEqual(tool.parent_id, Math.max(...tasks.map(t => t.id)), '不应指向 task-notification');
+  assert.equal(tool.parent_id, real.id, '应指向真实用户提示词');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('TOOL attribution never points at a parent that arrived after the tool', async () => { await boot(); try {
+  // 同一 claude_prompt_id 可能横跨多个 turn。不加时间约束时会取到一条晚于工具行的父行。
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+    claudePromptId:'cpLate', projectDir:'/p', filePath:'/a.js'
+  });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'后来的提示词', type:'PROMPT', claudePromptId:'cpLate', projectDir:'/p' });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  const tool = rows.find(r => r.type === 'TOOL');
+  assert.equal(tool.parent_id, null, '父行晚于工具行, 不应归属');
+  assert.equal(tool.parent_seq, null);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });

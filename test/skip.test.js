@@ -39,6 +39,26 @@ test('write tools with output are NOT low-signal', () => {
   assert.ok(!isLowSignalTool({ tool_name: 'Read', tool_input: { file_path: 'a.js' }, tool_response: { stdout: 'contents' } }));
 });
 
+// Read 的响应形状是 { type, file }, 没有 stdout。库里的 1251 条 Read 摘要全是"内容为空",
+// 就是因为旧实现只判 stdout, 内容进了 file 却被当成空输出 —— 白烧 LLM 换一张 skip 卡。
+test('Read with real content is NOT low-signal', () => {
+  assert.ok(!isLowSignalTool({
+    tool_name: 'Read', tool_input: { file_path: 'a.js' },
+    tool_response: { type: 'text', file: { filePath: 'a.js', content: 'const x = 1;' } }
+  }));
+});
+
+test('Read with no readable content is hard-skipped', () => {
+  assert.ok(isLowSignalTool({ tool_name: 'Read', tool_input: { file_path: 'nope.js' }, tool_response: { type: 'text' } }));
+  assert.ok(isLowSignalTool({ tool_name: 'Read', tool_input: { file_path: 'nope.js' }, tool_response: {} }));
+  assert.ok(isLowSignalTool({ tool_name: 'Read', tool_input: { file_path: 'nope.js' } }));
+  // 空文件: 有 file 结构但内容为空, 同样不值得记
+  assert.ok(isLowSignalTool({
+    tool_name: 'Read', tool_input: { file_path: 'empty.js' },
+    tool_response: { type: 'text', file: { filePath: 'empty.js', content: '' } }
+  }));
+});
+
 test('isReadOnlyBash edge cases', () => {
   assert.ok(isReadOnlyBash('git diff --stat'));
   assert.ok(!isReadOnlyBash('git commit -am x'));
