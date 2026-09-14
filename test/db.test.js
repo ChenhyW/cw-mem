@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { openDb } = require('../lib/db');
+const { openDb, nextSeq } = require('../lib/db');
 
 test('openDb creates tables and vec0 virtual table', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-db-'));
@@ -59,4 +59,54 @@ test('prompts has tool_target column and backfills from tool_details', () => {
   const { db: db3 } = openDb(dir, 4);
   assert.equal(db3.prepare("SELECT tool_target FROM prompts WHERE id=2").get().tool_target, 'Bash ');
   fs.rmSync(dir, { recursive: true });
+});
+
+test('nextSeq is globally unique across prompts and session_summaries', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-db-'));
+  const { db } = openDb(dir, 4);
+  assert.deepEqual([nextSeq(db), nextSeq(db), nextSeq(db)], [1, 2, 3], '发号单调递增');
+  // 两类卡片共享一个编号空间: 各自的 autoid 互不影响
+  db.prepare("INSERT INTO prompts(id, session_id, type, seq, created_at) VALUES (?,?,?,?,?)")
+    .run(1, 's1', 'PROMPT', nextSeq(db), '2026-09-01T00:00:00Z');
+  db.prepare("INSERT INTO session_summaries(id, session_id, seq, created_at) VALUES (?,?,?,?)")
+    .run(1, 's1', nextSeq(db), '2026-09-01T00:00:01Z');
+  const all = db.prepare("SELECT seq FROM prompts WHERE seq IS NOT NULL" +
+    " UNION ALL SELECT seq FROM session_summaries WHERE seq IS NOT NULL ORDER BY seq").all().map(r => r.seq);
+  assert.deepEqual(all, [4, 5], 'PROMPT 卡与会话摘要卡共用同一序列');
+  db.close(); fs.rmSync(dir, { recursive: true });
+});
+
+test('reopen backfills seq for historical rows and never collides with new seqs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-db-'));
+  const { db } = openDb(dir, 4);
+  // 手造 0.2.6 之前的老行: 已落库但 seq 为空
+  db.prepare("INSERT INTO prompts(id, session_id, type, created_at) VALUES (?,?,?,?)")
+    .run(1, 's1', 'PROMPT', '2026-09-01T00:00:00Z');
+  db.prepare("INSERT INTO prompts(id, session_id, type, created_at) VALUES (?,?,?,?)")
+    .run(2, 's1', 'TOOL', '2026-09-01T00:00:01Z');
+  // request 必须非空: openDb 会先清掉六字段全空的旧摘要, 那种行不会被回填
+  db.prepare("INSERT INTO session_summaries(id, session_id, request, created_at) VALUES (?,?,?,?)")
+    .run(1, 's1', '做一个会话', '2026-09-01T00:00:02Z');
+  db.close();
+
+  const { db: db2 } = openDb(dir, 4);
+  const seqs = [
+    db2.prepare('SELECT seq FROM prompts WHERE id = 1').get().seq,
+    db2.prepare('SELECT seq FROM prompts WHERE id = 2').get().seq,
+    db2.prepare('SELECT seq FROM session_summaries WHERE id = 1').get().seq
+  ];
+  assert.deepEqual(seqs, [1, 2, 3], '跨表按 created_at 升序回填');
+  // 回填后计数器已推进, 新写入必须接着 3 —— 否则新卡和老卡撞号
+  assert.equal(nextSeq(db2), 4);
+
+  // 幂等: 再开一次不改已有编号, 也不重复发号
+  db2.close();
+  const { db: db3 } = openDb(dir, 4);
+  assert.deepEqual(
+    [db3.prepare('SELECT seq FROM prompts WHERE id = 1').get().seq,
+     db3.prepare('SELECT seq FROM prompts WHERE id = 2').get().seq,
+     db3.prepare('SELECT seq FROM session_summaries WHERE id = 1').get().seq],
+    [1, 2, 3], '重开不重编号');
+  assert.equal(db3.prepare("SELECT value FROM seq_counters WHERE name='global'").get().value, 4);
+  db3.close(); fs.rmSync(dir, { recursive: true });
 });

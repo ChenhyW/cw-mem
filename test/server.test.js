@@ -579,3 +579,28 @@ test('TOOL attribution never points at a parent that arrived after the tool', as
   assert.equal(tool.parent_id, null, '父行晚于工具行, 不应归属');
   assert.equal(tool.parent_seq, null);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// 序号落库(prompts.seq / session_summaries.seq 共用一个计数器), UI 直接显示, 不再按已加载
+// 分页现场推算。关键不变量: TOOL 卡的 parent_seq 必须等于父 PROMPT 行自己的 seq,
+// 这样"归属提示词 #N"和父卡页脚的 #N 才是同一个数 —— 旧实现两边口径不同, 同一张卡滚动
+// 前后会显示 #1 和 #183。
+test('cards carry a persisted global seq and parent_seq equals the parent row seq', async () => { await boot(); try {
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'第一条', type:'PROMPT', claudePromptId:'cp1', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+    claudePromptId:'cp1', projectDir:'/p', filePath:'/a.js'
+  });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'第二条', type:'PROMPT', claudePromptId:'cp2', projectDir:'/p' });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  assert.equal(rows.length, 3);
+  for (const r of rows) assert.ok(r.seq != null, '每行都必须有落库的 seq, 实际 ' + r.seq);
+  assert.deepEqual(rows.map(r => r.seq).sort((a, b) => a - b), [1, 2, 3], '三张卡拿到连续的全局序号');
+
+  const parent = rows.find(r => r.type === 'PROMPT' && r.claude_prompt_id === 'cp1');
+  const tool = rows.find(r => r.type === 'TOOL');
+  assert.equal(tool.parent_id, parent.id);
+  assert.equal(tool.parent_seq, parent.seq, '归属编号必须等于父行自己的 seq');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });

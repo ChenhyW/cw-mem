@@ -531,24 +531,14 @@ function mdToHtml(src) {
 // 展开中的内联详情(PROMPT 卡片), 重渲染后恢复
 const expandedDetails = new Set();
 
-// PROMPT 卡片显示序号: 按时间正序(旧→新) 1..N, 会话轮次编号。
-// 修复归属错乱: 卡片头部展示的 #N 与 TOOL 卡"归属提示词 #N"使用同一序号,
-// 且 key 带 session_id 防止跨会话 claude_prompt_id 撞号。
-function buildPromptMaps(list) {
-  const seqById = {};
-  const seqByClaudePid = {};
-  const idByClaudePid = {};
-  const promptsOnly = list.filter(p => p.type === 'PROMPT')
-    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || (a.id - b.id));
-  promptsOnly.forEach((p, i) => {
-    seqById[p.id] = i + 1;
-    if (p.claude_prompt_id) {
-      const k = p.session_id + '|' + p.claude_prompt_id;
-      seqByClaudePid[k] = i + 1;
-      idByClaudePid[k] = p.id;  // 父 PROMPT 卡的 data-id(db id), 供 TOOL 卡跳转
-    }
-  });
-  return { seqById, seqByClaudePid, idByClaudePid };
+// 已渲染行的 id 集合, 只用来判断"父 PROMPT 卡是否已在列表里"(决定归属链接能不能点)。
+// 编号本身用服务端落库的 seq: 全局唯一且持久化, 不随分页/项目过滤重置。
+// 旧实现在这里按已加载列表 i+1 现场算序号, 列表一重置就从头编号, 而且和 TOOL 卡
+// 归属用的服务端全局序号不是同一个数(同一张卡滚动前后会显示 #1 和 #183)。
+function buildLoadedIds(list) {
+  const loaded = new Set();
+  for (const p of list) loaded.add(p.id);
+  return { loaded };
 }
 
 function parseMeta(s) { if (!s) return null; try { return JSON.parse(s); } catch (e) { return null; } }
@@ -647,16 +637,11 @@ function cardBody(p, maps) {
   if (isTool) {
     // TOOL 卡布局: 顶行(类型徽章+项目名+归属) → 标题 → 结果 → 底行(ID+时间+向量化状态)
     const meta = parseMeta(p.summary_meta);
-    const pkey = p.claude_prompt_id ? (p.session_id + '|' + p.claude_prompt_id) : null;
-    // 归属编号: 父 PROMPT 在已加载列表时优先用它(与父卡页脚 #N 同源); 否则回退服务端算好的
-    // parent_seq/parent_id —— 列表按 created_at DESC, 而 TOOL 行晚于其父 PROMPT 落库,
-    // 首屏 TOOL 卡的父行普遍排在分页之外, 只看已加载映射会整屏丢归属。
-    const localSeq = pkey ? maps.seqByClaudePid[pkey] : undefined;
-    const localId = pkey ? maps.idByClaudePid[pkey] : undefined;
-    const parentSeq = localSeq != null ? localSeq : (p.parent_seq || null);
-    const parentId = localId != null ? localId : (p.parent_id || null);
-    // 父卡不在已渲染列表时跳转没有落点, 只展示编号不给死链
-    const parentLoaded = localId != null;
+    // 归属编号直接用服务端落库的 seq(与父 PROMPT 卡页脚同号源, 全局唯一不重置)。
+    // 列表按 created_at DESC 而 TOOL 行晚于其父 PROMPT 落库, 首屏 TOOL 卡的父行普遍排在
+    // 分页之外, 所以编号必须来自服务端; 客户端只判断父卡是否可跳转。
+    const parentSeq = p.parent_seq != null ? p.parent_seq : null;
+    const parentLoaded = p.parent_id != null && maps.loaded.has(p.parent_id);
     const proj = p.project_dir ? (p.project_dir.split('/').pop() || p.project_dir) : '';
     // 归属链接: 有编号就显示; 父卡已加载才可点击, 否则只给提示不做死链
     let parentChip = '';
@@ -678,7 +663,7 @@ function cardBody(p, maps) {
       (meta.title ? '<div class="tool-title">' + esc(meta.title) + '</div>' : '') +
       (meta.result ? '<div class="tool-result">' + esc(meta.result) + '</div>' : '')
       : '';
-    const foot = '<div class="card-foot"><span class="card-meta">#' + p.id + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
+    const foot = '<div class="card-foot"><span class="card-meta">#' + (p.seq != null ? p.seq : p.id) + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
     return topRow + body + foot;
   }
   // PROMPT 卡: 顶行(badge+项目名+摘要状态) → 提示词标题 → 结果摘要 → 注入记忆 → 详情 → 底行(ID+时间+向量化)
@@ -693,13 +678,13 @@ function cardBody(p, maps) {
   const detailBtn = p.response ? '<button class="detail-btn" onclick="toggleDetail(' + p.id + ')">' + (expanded ? '收起详情' : '查看详情') + '</button>' : '';
   const detailInline = p.response ? '<div class="detail-inline" id="detail-' + p.id + '"' + (expanded ? '' : ' style="display:none"') + '>' +
     '<div class="detail-md">' + mdToHtml(p.response) + '</div></div>' : '';
-  const foot = '<div class="card-foot"><span class="card-meta">#' + (maps.seqById[p.id] || p.id) + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
+  const foot = '<div class="card-foot"><span class="card-meta">#' + (p.seq != null ? p.seq : p.id) + ' · ' + fmtTime(p.created_at) + '</span>' + vectorPill(p) + '</div>';
   return head + promptTitle + renderSummary(p) + renderInjected(p) + detailBtn + detailInline + foot;
 }
 
 function render(list) {
-  // 序号映射基于全量已加载列表(而非当前分页), 分页加载后编号保持一致
-  const maps = buildPromptMaps(prompts);
+  // 基于全量已加载列表(而非当前分页), 分页加载后"父卡是否可跳转"的判断保持一致
+  const maps = buildLoadedIds(prompts);
   // TOOL 摘要未生成(无 summary/summary_meta)的行不渲染, 避免一排空 TOOL 卡
   const html = list
     .filter(p => p.type !== 'TOOL' || p.summary || p.summary_meta)
@@ -880,7 +865,7 @@ function sessionCard(s) {
     + (s.ended_at ? '<span class="card-meta">会话结束于 ' + fmtTime(s.ended_at) + '</span>' : '')
     + '</div>';
   const foot = '<div class="card-foot">'
-    + '<span class="card-meta">摘要 #' + s.id + ' · ' + fmtTime(s.created_at) + '</span>'
+    + '<span class="card-meta">#' + (s.seq != null ? s.seq : s.id) + ' · ' + fmtTime(s.created_at) + '</span>'
     + '<span class="card-meta" title="session_id">' + esc(s.session_id.slice(0, 8)) + '</span>'
     + '</div>';
   return '<div class="card session-card">' + head + rows + foot + '</div>';
