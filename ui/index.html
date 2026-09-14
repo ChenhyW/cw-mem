@@ -648,7 +648,7 @@ function cardBody(p, maps) {
     if (parentSeq) {
       parentChip = '<span class="parent-link' + (parentLoaded ? ' parent-jump' : '') + '"' +
         (parentLoaded
-          ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"'
+          ? ' onclick="jumpToPrompt(' + p.parent_id + ')" title="跳转到归属提示词"'
           : ' title="归属提示词 #' + parentSeq + '(父卡片不在当前列表, 加载后可跳转)"') +
         '>↳ 归属提示词 #' + parentSeq + '</span>';
     }
