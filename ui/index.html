@@ -46,6 +46,8 @@ body { font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',
 .parent-link { font-size:12px; color:var(--accent); }
 .parent-jump { cursor:pointer; }
 .parent-jump:hover { text-decoration:underline; }
+/* 父卡片不在已加载列表时: 编号照样显示, 但压暗表示当前不可跳转 */
+.parent-link:not(.parent-jump) { opacity:.6; }
 .card-flash { animation: cardFlash 1.6s ease; }
 @keyframes cardFlash { 0%,100% { box-shadow:var(--shadow); } 20%,60% { box-shadow:0 0 0 2px var(--accent), 0 6px 18px rgba(139,92,246,0.28); } }
 .card-meta { font-size:12px; color:var(--text-muted); opacity:0.85; }
@@ -646,15 +648,31 @@ function cardBody(p, maps) {
     // TOOL 卡布局: 顶行(类型徽章+项目名+归属) → 标题 → 结果 → 底行(ID+时间+向量化状态)
     const meta = parseMeta(p.summary_meta);
     const pkey = p.claude_prompt_id ? (p.session_id + '|' + p.claude_prompt_id) : null;
-    const parentSeq = pkey ? maps.seqByClaudePid[pkey] : null;
-    const parentId = pkey ? maps.idByClaudePid[pkey] : null;
+    // 归属编号: 父 PROMPT 在已加载列表时优先用它(与父卡页脚 #N 同源); 否则回退服务端算好的
+    // parent_seq/parent_id —— 列表按 created_at DESC, 而 TOOL 行晚于其父 PROMPT 落库,
+    // 首屏 TOOL 卡的父行普遍排在分页之外, 只看已加载映射会整屏丢归属。
+    const localSeq = pkey ? maps.seqByClaudePid[pkey] : undefined;
+    const localId = pkey ? maps.idByClaudePid[pkey] : undefined;
+    const parentSeq = localSeq != null ? localSeq : (p.parent_seq || null);
+    const parentId = localId != null ? localId : (p.parent_id || null);
+    // 父卡不在已渲染列表时跳转没有落点, 只展示编号不给死链
+    const parentLoaded = localId != null;
     const proj = p.project_dir ? (p.project_dir.split('/').pop() || p.project_dir) : '';
+    // 归属链接: 有编号就显示; 父卡已加载才可点击, 否则只给提示不做死链
+    let parentChip = '';
+    if (parentSeq) {
+      parentChip = '<span class="parent-link' + (parentLoaded ? ' parent-jump' : '') + '"' +
+        (parentLoaded
+          ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"'
+          : ' title="归属提示词 #' + parentSeq + '(父卡片不在当前列表, 加载后可跳转)"') +
+        '>↳ 归属提示词 #' + parentSeq + '</span>';
+    }
     const topRow = '<div class="card-head">' +
       obsBadge(meta && meta.type) +
       // 一张卡是 N 次同文件工具调用的合并摘要, 组内其余行不渲染 —— 没有这个徽标看不出卡覆盖了几个调用
       (meta && Number(meta.count) > 1 ? '<span class="group-badge" title="这张卡是 ' + Number(meta.count) + ' 次工具调用的合并摘要">' + Number(meta.count) + ' 次合并</span>' : '') +
       (proj ? '<span class="card-project">' + esc(proj) + '</span>' : '') +
-      (parentSeq ? '<span class="parent-link' + (parentId ? ' parent-jump' : '') + '"' + (parentId ? ' onclick="jumpToPrompt(' + parentId + ')" title="跳转到归属提示词"' : '') + '>↳ 归属提示词 #' + parentSeq + '</span>' : '') +
+      parentChip +
       '</div>';
     const body = meta ?
       (meta.title ? '<div class="tool-title">' + esc(meta.title) + '</div>' : '') +

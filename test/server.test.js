@@ -417,3 +417,125 @@ test('summarize targets the same row the response just landed on', async () => {
   })).body);
   if (again.status === 'ok') assert.equal(again.id, s.id, '重试应落在同一行, 实际 ' + again.id + ' vs ' + s.id);
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// hook 上报的 cwd 是当前 shell 工作目录, 不是会话启动目录。agent 跑 `cd x && ...` 复合命令
+// 后 cwd 会漂移, 同一个会话被拆成多个"项目", 按目录过滤的语义召回和会话摘要注入随之被切碎。
+// 真实库实测: 303 次相邻行 cwd 切换, 51% 的切换点命令里就带 cd。
+test('project_dir canonicalizes to the session first-seen cwd, not the drifted shell cwd', async () => { await boot(); try {
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'真实 prompt', type:'PROMPT', projectDir:'/p'
+  });
+  // 后续 hook 上报的 cwd 是 cd 之后的子目录
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read', projectDir:'/p/gxyd_portal_back'
+  });
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'<task-notification>', type:'PROMPT', projectDir:'/p/gxyd_portal_front'
+  });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  assert.equal(rows.length, 3);
+  for (const r of rows) {
+    assert.equal(r.project_dir, '/p', '所有行应归一化到启动目录, 实际 ' + r.project_dir);
+  }
+
+  const sess = JSON.parse((await req('GET','/api/sessions')).body).sessions;
+  assert.equal(sess.find(x => x.id === 's1').project_dir, '/p',
+    'sessions.project_dir 不应被后续漂移的 cwd 顶掉');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('session project_dir is first-wins across repeated POST /api/sessions', async () => { await boot(); try {
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p' });
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p/gxyd_portal_back' });
+  await req('POST','/api/sessions', { sessionId:'s1', projectDir:'/p/gxyd_portal_front' });
+
+  const sess = JSON.parse((await req('GET','/api/sessions')).body).sessions;
+  assert.equal(sess.find(x => x.id === 's1').project_dir, '/p',
+    '首见目录锁定, 后续写入只续 last_seen_at');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('prompts canonicalize even when no /api/sessions call came first', async () => { await boot(); try {
+  // SessionStart hook 漏掉或 spool 重放乱序时, 会话行可能由第一条 prompt 顺带建出来
+  await req('POST','/api/prompts', {
+    sessionId:'s2', prompt:'第一条', type:'PROMPT', projectDir:'/q'
+  });
+  await req('POST','/api/prompts', {
+    sessionId:'s2', prompt:'Read: ', type:'TOOL', toolName:'Read', projectDir:'/q/sub'
+  });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s2')).body).prompts;
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].project_dir, '/q', '后到的行应沿用首行登记的目录');
+  assert.equal(rows[1].project_dir, '/q');
+
+  const sess = JSON.parse((await req('GET','/api/sessions')).body).sessions;
+  assert.equal(sess.find(x => x.id === 's2').project_dir, '/q', '会话行应被顺带建立并锁定目录');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+// TOOL 行的父 PROMPT 在它之前落库(user-prompt-submit 早于 post-tool-use), 而 /api/prompts
+// 按 created_at DESC 排, 父行被挤到当前分页之外。归属必须由服务端解析: 真实库实测首屏 39 张
+// TOOL 卡的父 PROMPT 全部不在本页, 客户端靠已加载列表建映射会整屏丢"归属提示词"。
+test('TOOL attribution is resolved server-side even when the parent row is off-page', async () => { await boot(); try {
+  // 别的会话里更早的一条: 钉住"全局序号"语义。UI 的 PROMPT 卡页脚 #N 是跨会话全局编号,
+  // 若这里误按会话内轮次算, cp2 会得到 2 而不是 3, "归属提示词 #N"就指向不存在的卡。
+  await req('POST','/api/prompts', { sessionId:'s2', prompt:'更早的一条', type:'PROMPT', claudePromptId:'cp0', projectDir:'/other' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'父提示词一', type:'PROMPT', claudePromptId:'cp1', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'父提示词二', type:'PROMPT', claudePromptId:'cp2', projectDir:'/p' });
+  await SLEEP(20);
+  for (let i = 0; i < 40; i++) {
+    await req('POST','/api/prompts', {
+      sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+      claudePromptId:'cp2', projectDir:'/p', filePath:'/x.js'
+    });
+  }
+
+  const page = JSON.parse((await req('GET','/api/prompts?limit=30&offset=0')).body);
+  const onPage = new Set(page.prompts.map(r => r.id));
+  const cards = page.prompts.filter(r => r.type === 'TOOL');
+  assert.ok(cards.length > 0, '首页应至少有一条 TOOL 行');
+  assert.equal(page.prompts.filter(r => r.type === 'PROMPT').length, 0,
+    '父 PROMPT 行应不在这一页(否则测不到分页漏归属的场景)');
+  for (const c of cards) {
+    assert.ok(!onPage.has(c.parent_id), '父 PROMPT 确不在本页, 归属仍应可解析');
+    assert.equal(c.parent_id, 3, 'parent_id 应指向父 PROMPT 行');
+    assert.equal(c.parent_seq, 3, 'parent_seq 应是跨会话全局序号, 含 s2 那条更早的');
+  }
+  // PROMPT 行本身没有归属
+  const all = JSON.parse((await req('GET','/api/prompts?limit=100&offset=0')).body).prompts;
+  for (const p of all.filter(r => r.type === 'PROMPT')) {
+    assert.equal(p.parent_id, null, 'PROMPT 行不应有 parent_id');
+    assert.equal(p.parent_seq, null, 'PROMPT 行不应有 parent_seq');
+  }
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('TOOL attribution resolves against the full DB, ignoring the row filter', async () => { await boot(); try {
+  await req('POST','/api/prompts', { sessionId:'s1', prompt:'父提示词', type:'PROMPT', claudePromptId:'cp1', projectDir:'/p' });
+  await SLEEP(20);
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+    claudePromptId:'cp1', projectDir:'/p', filePath:'/a.js'
+  });
+
+  // type 过滤把父 PROMPT 行整行排除在结果集之外, 归属仍要能解析;
+  // project 过滤同理(历史数据里 cwd 漂移过的行, 父/子 project_dir 不同)
+  const j = JSON.parse((await req('GET','/api/prompts?type=TOOL')).body);
+  assert.equal(j.prompts.length, 1, '过滤后只剩 TOOL 行');
+  assert.equal(j.prompts[0].type, 'TOOL');
+  assert.equal(j.prompts[0].parent_seq, 1, '父 PROMPT 不在结果集内也不能丢归属编号');
+  assert.ok(j.prompts[0].parent_id > 0);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
+test('TOOL attribution is null when no parent PROMPT row exists', async () => { await boot(); try {
+  // 父 PROMPT 从未落库(SessionStart/UserPromptSubmit hook 漏掉, 或 spool 乱序)
+  await req('POST','/api/prompts', {
+    sessionId:'s1', prompt:'Read: ', type:'TOOL', toolName:'Read',
+    claudePromptId:'cp-gone', projectDir:'/p'
+  });
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s1')).body).prompts;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].parent_id, null);
+  assert.equal(rows[0].parent_seq, null);
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
