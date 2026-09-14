@@ -126,7 +126,10 @@ function remember(path, body) {
   // ── 确保 session + 写 TOOL prompt + tool_details ──
   // 先把三个 body 全构造出来: server 不可达时一次性全进 spool, 不逐个重试
   // (每次 POST 最长 5s 超时, 而 PostToolUse 在用户热路径上)。
-  const sessBody = { sessionId: session_id, projectDir: cwd };
+  // /api/sessions 只建/续活会话行, 不带上 cwd —— 这里的 cwd 是漂移后的 shell 目录,
+  // 一旦上报就可能抢先钉成 session 的规范目录(见 server.js ensureSessionProject)。
+  // 规范目录只由 SessionStart / UserPromptSubmit 上报的启动目录决定。
+  const sessBody = { sessionId: session_id };
   const promptBody = {
     sessionId: session_id,
     prompt: tool_name + ': ' + (resp.stdout || '').slice(0, 200),

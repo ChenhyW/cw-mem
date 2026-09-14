@@ -455,6 +455,33 @@ test('session project_dir is first-wins across repeated POST /api/sessions', asy
     '首见目录锁定, 后续写入只续 last_seen_at');
 } finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
 
+test('a drifted TOOL row arriving first cannot claim the session lock', async () => { await boot(); try {
+  // 竞态: SessionStart 的 POST 失败进 spool, 先到的是 PostToolUse —— 它上报的 cwd
+  // 已经是 `cd` 之后的子目录。旧实现首见即锁定, session 整个被钉在漂移目录上。
+  await req('POST','/api/sessions', { sessionId:'s9' });           // 新 hook 只建/续活会话行
+  await req('POST','/api/prompts', {
+    sessionId:'s9', prompt:'Read: ', type:'TOOL', toolName:'Read', projectDir:'/p/gxyd_portal_back'
+  });
+  let sess = JSON.parse((await req('GET','/api/sessions')).body).sessions;
+  assert.ok(!sess.find(x => x.id === 's9').project_dir, '漂移的 TOOL 行不得抢先设锁');
+
+  // 真正的启动目录由 PROMPT 行给出(UserPromptSubmit 的 cwd 不漂移)
+  await req('POST','/api/prompts', { sessionId:'s9', prompt:'开始', type:'PROMPT', projectDir:'/p' });
+  await req('POST','/api/prompts', {
+    sessionId:'s9', prompt:'Edit: ', type:'TOOL', toolName:'Edit', projectDir:'/p/gxyd_portal_front'
+  });
+
+  const rows = JSON.parse((await req('GET','/api/prompts?sessionId=s9')).body).prompts;
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.filter(r => r.project_dir).map(r => r.project_dir), ['/p', '/p'],
+    '锁设定之后的行统一归到启动目录');
+  assert.equal(rows.find(r => r.tool_name === 'Read').project_dir, null,
+    '锁尚未设定时该 TOOL 行 project_dir 落 NULL, 而不是漂移目录');
+  assert.equal(
+    JSON.parse((await req('GET','/api/sessions')).body).sessions.find(x => x.id === 's9').project_dir,
+    '/p', '最终锁 = 启动目录');
+} finally { serverHandle.close(); fs.rmSync(dir,{recursive:true}); } });
+
 test('prompts canonicalize even when no /api/sessions call came first', async () => { await boot(); try {
   // SessionStart hook 漏掉或 spool 重放乱序时, 会话行可能由第一条 prompt 顺带建出来
   await req('POST','/api/prompts', {
